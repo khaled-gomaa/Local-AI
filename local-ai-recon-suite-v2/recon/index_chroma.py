@@ -13,7 +13,8 @@ except ImportError as exc:
     raise SystemExit("Install requirements.txt first") from exc
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from recon.common import CHUNKS, DOCS, DATA
+
+from recon.common import CHUNKS, DATA
 from recon.state_store import ReconStore
 
 OLLAMA = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
@@ -27,70 +28,94 @@ COLLECTIONS = {
     "public_disclosures": "public_disclosures",
 }
 
-def embed(texts):
-    r = requests.post(
+def embed(texts: list[str]) -> list[list[float]]:
+    response = requests.post(
         f"{OLLAMA}/api/embed",
         json={"model": EMBED_MODEL, "input": texts},
         timeout=120,
     )
-    if r.status_code == 404:
+    if response.status_code == 404:
         raise RuntimeError(
             f"Ollama embedding model '{EMBED_MODEL}' is unavailable. "
             f"Run: ollama pull {EMBED_MODEL}"
         )
-    r.raise_for_status()
-    data = r.json()
-    return data.get("embeddings", [])
+    response.raise_for_status()
+    vectors = response.json().get("embeddings", [])
+    if len(vectors) != len(texts):
+        raise RuntimeError(
+            f"Ollama returned {len(vectors)} embeddings for {len(texts)} texts"
+        )
+    return vectors
 
-def load_latest_doc_ids():
-    # SQLite is authoritative for the active document version.
-    latest = {}
-    with ReconStore() as store:
-        rows = store.conn.execute(
-            "SELECT url, record_id FROM documents WHERE version > 0"
-        ).fetchall()
-        for row in rows:
-            latest[row["url"]] = row["record_id"]
-    return latest
+def load_chunks_for_records(record_ids: set[str]) -> dict[str, list[dict]]:
+    grouped: dict[str, list[dict]] = {record_id: [] for record_id in record_ids}
+    if not record_ids or not CHUNKS.exists():
+        return grouped
 
-def load_legacy_latest_doc_ids():
-    latest: dict[str, str] = {}
-    if not DOCS.exists():
-        return latest
-
-    with DOCS.open(encoding="utf-8") as f:
-        for line in f:
+    with CHUNKS.open(encoding="utf-8") as handle:
+        for line in handle:
             if not line.strip():
                 continue
             row = json.loads(line)
-            url = row.get("url")
-            doc_id = row.get("id")
-            if url and doc_id:
-                latest[url] = doc_id
-    return latest
+            record_id = row.get("doc_id")
+            if record_id in grouped:
+                grouped[record_id].append(row)
 
-def load_rows():
-    if not CHUNKS.exists():
-        return []
+    for rows in grouped.values():
+        rows.sort(key=lambda row: int(row.get("rank", 0)))
+    return grouped
 
-    latest_docs = load_latest_doc_ids()
-    rows_by_id: dict[str, dict] = {}
+def delete_document_chunks(collection, record_id: str) -> int:
+    result = collection.get(
+        where={"doc_id": record_id},
+        include=[],
+    )
+    ids = result.get("ids") or []
+    if ids:
+        collection.delete(ids=ids)
+    return len(ids)
 
-    with CHUNKS.open(encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            row = json.loads(line)
-            url = row.get("url")
-            doc_id = row.get("doc_id")
-            chunk_id = row.get("id")
-            if not url or not doc_id or not chunk_id:
-                continue
-            if latest_docs.get(url) != doc_id:
-                continue
-            rows_by_id[chunk_id] = row
+def index_job(job, chunks_by_record, collections) -> None:
+    record_id = job["record_id"]
+    category = job["category"]
+    previous_record_id = job["previous_record_id"]
+    previous_category = job["previous_category"]
 
-    return list(rows_by_id.values())
+    if previous_record_id and previous_category in collections:
+        removed = delete_document_chunks(
+            collections[previous_category],
+            previous_record_id,
+        )
+        if removed:
+            print(
+                f"[-] removed old chunks: "
+                f"{previous_category}/{previous_record_id} ({removed})"
+            )
+
+    rows = chunks_by_record.get(record_id, [])
+    if not rows:
+        raise RuntimeError(f"No chunks found for record_id={record_id}")
+
+    collection = collections[category]
+    texts = [row["text"] for row in rows]
+    vectors = embed(texts)
+
+    collection.upsert(
+        ids=[row["id"] for row in rows],
+        embeddings=vectors,
+        documents=texts,
+        metadatas=[{
+            "doc_id": row["doc_id"],
+            "title": row["title"],
+            "url": row["url"],
+            "source": row["source"],
+            "published": row["published"],
+            "category": row["category"],
+            "score": float(row.get("score", 0)),
+            "keywords": ",".join(row.get("keywords", [])),
+            "rank": int(row.get("rank", 0)),
+        } for row in rows],
+    )
 
 def main():
     DB.mkdir(parents=True, exist_ok=True)
@@ -103,64 +128,78 @@ def main():
         for category, name in COLLECTIONS.items()
     }
 
-    rows = load_rows()
-    pending = {k: [] for k in collections}
-    desired_ids = {k: set() for k in collections}
+    batch_size = max(1, min(int(os.getenv("INDEX_BATCH_JOBS", "8")), 100))
+    stale_minutes = max(5, int(os.getenv("INDEX_RECLAIM_MINUTES", "30")))
 
-    for row in rows:
-        cat = row.get("category")
-        if cat not in pending:
-            continue
-        pending[cat].append(row)
-        desired_ids[cat].add(row["id"])
+    with ReconStore() as store:
+        reclaimed = store.reset_stale_index_jobs(stale_minutes)
+        if reclaimed:
+            print(f"[*] reclaimed stale index jobs: {reclaimed}")
 
-    total = 0
-    prune = os.getenv("CHROMA_PRUNE_STALE", "1").lower() not in {"0", "false", "no"}
-    batch_size = max(1, int(os.getenv("EMBED_BATCH", "16")))
+        pending = store.pending_index_count()
+        print(f"[*] pending index jobs: {pending}")
 
-    for cat, data in pending.items():
-        col = collections[cat]
-        existing_ids = set(col.get(include=[])["ids"]) if col.count() else set()
+        run_id = store.begin_index_run()
+        claimed_total = done_total = failed_total = 0
 
-        if prune:
-            stale = existing_ids - desired_ids[cat]
-            if stale:
-                col.delete(ids=list(stale))
-                print(f"[-] pruned {cat}: {len(stale)} stale chunks")
-                existing_ids -= stale
+        try:
+            while True:
+                jobs = store.claim_index_jobs(batch_size)
+                if not jobs:
+                    break
 
-        for i in range(0, len(data), batch_size):
-            batch = [x for x in data[i:i + batch_size] if x["id"] not in existing_ids]
-            if not batch:
-                continue
+                claimed_total += len(jobs)
+                record_ids = {job["record_id"] for job in jobs}
+                chunks_by_record = load_chunks_for_records(record_ids)
 
-            vectors = embed([x["text"] for x in batch])
-            if len(vectors) != len(batch):
-                raise RuntimeError("Ollama returned a different number of embeddings")
+                for job in jobs:
+                    try:
+                        current = store.get(job["url"])
 
-            col.upsert(
-                ids=[x["id"] for x in batch],
-                embeddings=vectors,
-                documents=[x["text"] for x in batch],
-                metadatas=[{
-                    "doc_id": x["doc_id"],
-                    "title": x["title"],
-                    "url": x["url"],
-                    "source": x["source"],
-                    "published": x["published"],
-                    "category": x["category"],
-                    "score": float(x.get("score", 0)),
-                    "keywords": ",".join(x.get("keywords", [])),
-                } for x in batch],
+                        # A newer version superseded this job while it was pending.
+                        if current is None or current["record_id"] != job["record_id"]:
+                            store.mark_index_done(job["id"], job["content_hash"])
+                            done_total += 1
+                            print(
+                                f"[=] superseded index job skipped: {job['url']}"
+                            )
+                            continue
+
+                        index_job(job, chunks_by_record, collections)
+                        store.mark_index_done(job["id"], job["content_hash"])
+                        done_total += 1
+                        print(
+                            f"[+] indexed {job['category']}: "
+                            f"{job['url']} ({len(chunks_by_record[job['record_id']])} chunks)"
+                        )
+                    except Exception as exc:
+                        failed_total += 1
+                        store.mark_index_failed(job["id"], str(exc))
+                        print(f"[!] index job {job['id']} failed: {exc}")
+
+            store.finish_index_run(
+                run_id,
+                claimed=claimed_total,
+                done=done_total,
+                failed=failed_total,
             )
-            total += len(batch)
-            existing_ids.update(x["id"] for x in batch)
-            print(f"[+] indexed {cat}: {len(batch)}")
 
-    print(f"[+] New chunks indexed: {total}")
-    print("[+] Collection counts:")
-    for cat, col in collections.items():
-        print(f"    {cat}: {col.count()}")
+            print(
+                f"[+] Index run finished: claimed={claimed_total} "
+                f"done={done_total} failed={failed_total} "
+                f"pending={store.pending_index_count()}"
+            )
+            print("[+] Collection counts:")
+            for category, collection in collections.items():
+                print(f"    {category}: {collection.count()}")
+        except Exception:
+            store.finish_index_run(
+                run_id,
+                claimed=claimed_total,
+                done=done_total,
+                failed=failed_total + 1,
+            )
+            raise
 
 if __name__ == "__main__":
     main()
