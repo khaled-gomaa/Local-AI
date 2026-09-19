@@ -300,8 +300,11 @@ def _schedule_shadow_review(
     host: str,
 ) -> None:
     key = f"{program_id}:{host.lower()}"
-    with ProgramTrafficStore() as traffic:
+    traffic = ProgramTrafficStore()
+    try:
         count = traffic.request_count(program_id, host)
+    finally:
+        traffic.close()
     previous = shadow_last_count.get(key, 0)
     if count < AUTO_SHADOW_EVERY or count - previous < AUTO_SHADOW_EVERY:
         return
