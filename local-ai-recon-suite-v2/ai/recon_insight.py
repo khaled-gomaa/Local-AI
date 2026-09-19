@@ -115,6 +115,65 @@ def build_prompt(
     )
     return SYSTEM_PROMPT, user
 
+
+def render_insight(result: dict[str, Any]) -> str:
+    lines = [f"Recon Intelligence — {result.get('host', 'unknown')}", "", result.get("summary", "").strip()]
+
+    model = result.get("application_model") or []
+    if model:
+        lines += ["", "APPLICATION MODEL"]
+        for item in model[:12]:
+            area = item.get("area", "Area")
+            description = item.get("description", "")
+            evidence = ", ".join(item.get("evidence") or [])
+            lines.append(f"- {area}: {description}" + (f" [evidence: {evidence}]" if evidence else ""))
+
+    relationships = result.get("relationships") or []
+    if relationships:
+        lines += ["", "RELATIONSHIPS"]
+        for item in relationships[:20]:
+            lines.append(f"- {item.get("from")} -> {item.get("to")} [{item.get("relation")}]: {item.get("explanation", "")}")
+
+    endpoints = result.get("interesting_endpoints") or []
+    if endpoints:
+        lines += ["", "INTERESTING ENDPOINTS"]
+        for item in endpoints[:20]:
+            signals = ", ".join(item.get("signals") or [])
+            lines.append(f"- {item.get("url")}: {item.get("reason", "")}" + (f" ({signals})" if signals else ""))
+
+    params = result.get("parameter_observations") or []
+    if params:
+        lines += ["", "PARAMETER OBSERVATIONS"]
+        for item in params[:20]:
+            eps = ", ".join(item.get("endpoints") or [])
+            classes = ", ".join(item.get("candidate_classes") or [])
+            lines.append(f"- {item.get("parameter")}: {item.get("observation", "")} [confidence={item.get("confidence", 0):.2f}; candidates={classes}; endpoints={eps}]")
+
+    hypotheses = result.get("hypotheses") or []
+    if hypotheses:
+        lines += ["", "HYPOTHESES"]
+        for item in hypotheses[:20]:
+            evidence = "; ".join(item.get("supporting_evidence") or [])
+            lines.append(f"- {item.get("class")} @ {item.get("location")} — confidence={item.get("confidence", 0):.2f}. {item.get("why", "")}")
+            if evidence:
+                lines.append(f"  Evidence: {evidence}")
+            lines.append(f"  Next safe check: {item.get("next_safe_check", "")}")
+
+    gaps = result.get("gaps") or []
+    if gaps:
+        lines += ["", "GAPS"]
+        lines.extend(f"- {gap}" for gap in gaps[:20])
+
+    sources = result.get("sources") or result.get("knowledge_sources") or []
+    if sources:
+        lines += ["", "KNOWLEDGE SOURCES"]
+        for item in sources[:12]:
+            title = item.get("title", "Source")
+            url = item.get("url", "")
+            reason = item.get("why_relevant", item.get("source", ""))
+            lines.append(f"- {title} — {url}" + (f" — {reason}" if reason else ""))
+
+    return "\n".join(lines).strip()
 def parse_result(text: str) -> dict[str, Any]:
     parsed = _extract_json(text)
     if parsed is None:
