@@ -9,6 +9,7 @@ import burp.api.montoya.http.handler.HttpResponseReceived;
 import burp.api.montoya.http.handler.RequestToBeSentAction;
 import burp.api.montoya.http.handler.ResponseReceivedAction;
 import burp.api.montoya.http.message.requests.HttpRequest;
+import burp.api.montoya.proxy.ProxyHttpRequestResponse;
 import burp.api.montoya.ui.contextmenu.ContextMenuEvent;
 
 import javax.swing.BorderFactory;
@@ -164,6 +165,44 @@ public class Extension implements BurpExtension {
         timer.setRepeats(true);
         timer.start();
         SwingUtilities.invokeLater(this::refreshHosts);
+        events.submit(this::syncProxyHistory);
+    }
+
+    
+    private void syncProxyHistory() {
+        try {
+            List<ProxyHttpRequestResponse> history = api.proxy().history();
+            int scanned = 0;
+            int forwarded = 0;
+
+            int start = Math.max(0, history.size() - 5000);
+            for (int i = start; i < history.size(); i++) {
+                ProxyHttpRequestResponse item = history.get(i);
+                HttpRequest request = item.request();
+
+                if (!request.isInScope()) {
+                    continue;
+                }
+
+                String req = request.toString();
+                String resp = item.hasResponse() ? item.response().toString() : "";
+                long syntheticId = Integer.toUnsignedLong((req + "\n" + resp).hashCode());
+
+                sendEvent(request.url(), req, resp, syntheticId);
+                forwarded++;
+                scanned++;
+            }
+
+            api.logging().logToOutput(
+                    "Local Recon AI: history bootstrap scanned=" + scanned
+                            + " forwarded=" + forwarded
+                            + " of " + history.size()
+            );
+        } catch (Exception ex) {
+            api.logging().logToError(
+                    "Local Recon AI history bootstrap failed: " + ex.getMessage()
+            );
+        }
     }
 
     private void analyze(ContextMenuEvent event) {
