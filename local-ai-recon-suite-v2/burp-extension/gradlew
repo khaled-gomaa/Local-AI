@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+BASE="$(cd "$(dirname "$0")" && pwd)"
+VERSION="${GRADLE_VERSION:-8.8}"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/local-ai-recon/gradle-$VERSION"
+DIST="$CACHE/gradle-$VERSION"
+
+if command -v gradle >/dev/null 2>&1; then
+  exec gradle "$@"
+fi
+
+mkdir -p "$CACHE"
+if [ ! -x "$DIST/bin/gradle" ]; then
+  ARCHIVE="$CACHE/gradle-$VERSION-bin.zip"
+  URL="https://services.gradle.org/distributions/gradle-$VERSION-bin.zip"
+  echo "[*] Gradle not installed; downloading $VERSION..."
+  command -v curl >/dev/null 2>&1 || { echo "curl is required"; exit 1; }
+  curl -fL "$URL" -o "$ARCHIVE"
+  rm -rf "$DIST"
+  unzip -q "$ARCHIVE" -d "$CACHE"
+fi
+
+cd "$BASE"
+exec "$DIST/bin/gradle" "$@"

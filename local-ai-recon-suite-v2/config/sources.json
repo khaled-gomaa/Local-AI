@@ -1,0 +1,27 @@
+{
+  "rss": {
+    "ProjectDiscovery": "https://projectdiscovery.io/rss.xml",
+    "PortSwigger Research": "https://portswigger.net/research/rss",
+    "PortSwigger Blog": "https://portswigger.net/blog/rss",
+    "Assetnote": "https://blog.assetnote.io/feed.xml",
+    "Trail of Bits": "https://blog.trailofbits.com/feed/",
+    "Rapid7": "https://blog.rapid7.com/rss/",
+    "Offensive Security": "https://www.offsec.com/feed",
+    "Bishop Fox": "https://bishopfox.com/feeds/blog.rss/",
+    "OWASP": "https://owasp.org/rss.xml",
+    "GreyNoise": "https://www.greynoise.io/blog/rss.xml",
+    "VulnCheck": "https://vulncheck.com/feed/blog/atom.xml",
+    "VUSec": "https://www.vusec.net/feed/",
+    "watchTowr Labs": "https://labs.watchtowr.com/rss/",
+    "MDSec": "https://www.mdsec.co.uk/feed/",
+    "Outflank": "https://www.outflank.nl/blog/feed/",
+    "PenTest Partners": "https://www.pentestpartners.com/security-blog/feed/",
+    "Pentest Lab": "https://pentestlab.blog/feed/",
+    "Positive Security": "https://positive.security/blog/rss.xml"
+  },
+  "html_indexes": {
+    "HackerOne Blog": ["https://www.hackerone.com/blog"],
+    "Bugcrowd Blog": ["https://www.bugcrowd.com/blog/"],
+    "Bugcrowd CrowdStream": ["https://bugcrowd.com/crowdstream?filter=disclosures"]
+  }
+}
