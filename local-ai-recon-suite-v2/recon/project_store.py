@@ -43,6 +43,23 @@ CREATE TABLE IF NOT EXISTS program_hosts (
     FOREIGN KEY(program_id) REFERENCES programs(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS shadow_findings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    program_id INTEGER NOT NULL,
+    session_id INTEGER,
+    agent TEXT NOT NULL,
+    host TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(program_id, session_id, agent, host),
+    FOREIGN KEY(program_id) REFERENCES programs(id) ON DELETE CASCADE,
+    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_shadow_findings_program
+    ON shadow_findings(program_id, host, updated_at DESC);
+
 CREATE TABLE IF NOT EXISTS project_notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     program_id INTEGER NOT NULL,
@@ -221,6 +238,93 @@ class ProjectStore:
             (row["id"],),
         ).fetchall()
         return [dict(item) for item in rows]
+
+
+    def get_or_create_active_session(self, program: str) -> tuple[sqlite3.Row, sqlite3.Row]:
+        program_row = self.ensure_program(program)
+        session_row = self.ensure_session(program, date.today().isoformat())
+        return program_row, session_row
+
+    def save_shadow_finding(
+        self,
+        program_id: int,
+        session_id: int,
+        agent: str,
+        host: str,
+        result: dict,
+    ) -> None:
+        payload = json.dumps(result, ensure_ascii=False, sort_keys=True)
+        now = _now()
+        self.conn.execute(
+            """
+            INSERT INTO shadow_findings(
+                program_id, session_id, agent, host, result_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(program_id, session_id, agent, host)
+            DO UPDATE SET result_json = excluded.result_json,
+                          updated_at = excluded.updated_at
+            """,
+            (program_id, session_id, agent, host.lower(), payload, now, now),
+        )
+        self.conn.commit()
+
+        session_row = self.conn.execute(
+            "SELECT folder FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        if session_row:
+            folder = Path(session_row["folder"]) / "shadow"
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / f"{slugify(agent)}.json").write_text(
+                json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+    def shadow_context(
+        self,
+        program_id: int,
+        host: str | None = None,
+    ) -> list[dict]:
+        params: list = [program_id]
+        sql = """
+            SELECT agent, host, result_json, updated_at
+            FROM shadow_findings
+            WHERE program_id = ?
+        """
+        if host:
+            sql += " AND host = ?"
+            params.append(host.lower())
+        sql += " ORDER BY updated_at DESC LIMIT 100"
+
+        rows = self.conn.execute(sql, params).fetchall()
+        return [
+            {
+                "agent": row["agent"],
+                "host": row["host"],
+                "updated_at": row["updated_at"],
+                "result": json.loads(row["result_json"]),
+            }
+            for row in rows
+        ]
+
+    def program_by_id(self, program_id: int) -> sqlite3.Row | None:
+        return self.conn.execute(
+            "SELECT * FROM programs WHERE id = ?",
+            (program_id,),
+        ).fetchone()
+
+    def hosts_for_program(self, program_id: int) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT host, first_seen_at, last_seen_at
+            FROM program_hosts
+            WHERE program_id = ?
+            ORDER BY last_seen_at DESC
+            """,
+            (program_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def add_note(
         self,
