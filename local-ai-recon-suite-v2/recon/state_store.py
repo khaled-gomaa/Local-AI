@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
-DB_PATH = Path(__import__("os").getenv("RECON_DB_PATH", str(DATA / "recon.db")))
+DB_PATH = Path(os.getenv("RECON_DB_PATH", str(DATA / "recon.db")))
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
+
 CREATE TABLE IF NOT EXISTS documents (
     url TEXT PRIMARY KEY,
     content_hash TEXT NOT NULL,
@@ -24,8 +25,10 @@ CREATE TABLE IF NOT EXISTS documents (
     last_seen_at TEXT NOT NULL,
     version INTEGER NOT NULL DEFAULT 1
 );
+
 CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(content_hash);
 CREATE INDEX IF NOT EXISTS idx_documents_category ON documents(category);
+
 CREATE TABLE IF NOT EXISTS sync_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at TEXT NOT NULL,
@@ -52,9 +55,6 @@ class ReconStore:
         self.conn.executescript(SCHEMA)
         self.conn.commit()
 
-    def close(self) -> None:
-        self.conn.close()
-
     def __enter__(self) -> "ReconStore":
         return self
 
@@ -63,19 +63,29 @@ class ReconStore:
             self.conn.rollback()
         self.close()
 
+    def close(self) -> None:
+        self.conn.close()
+
     def get(self, url: str) -> sqlite3.Row | None:
         return self.conn.execute(
             "SELECT * FROM documents WHERE url = ?",
             (url,),
         ).fetchone()
 
+    def touch(self, url: str) -> None:
+        self.conn.execute(
+            "UPDATE documents SET last_seen_at = ? WHERE url = ?",
+            (_now(), url),
+        )
+        self.conn.commit()
+
     def begin_run(self, mode: str) -> int:
-        cur = self.conn.execute(
+        cursor = self.conn.execute(
             "INSERT INTO sync_runs(started_at, mode) VALUES(?, ?)",
             (_now(), mode),
         )
         self.conn.commit()
-        return int(cur.lastrowid)
+        return int(cursor.lastrowid)
 
     def finish_run(
         self,
@@ -139,11 +149,7 @@ class ReconStore:
             return "added"
 
         if current["content_hash"] == content_hash:
-            self.conn.execute(
-                "UPDATE documents SET last_seen_at = ? WHERE url = ?",
-                (now, url),
-            )
-            self.conn.commit()
+            self.touch(url)
             return "unchanged"
 
         self.conn.execute(
@@ -163,8 +169,7 @@ class ReconStore:
         return "updated"
 
     def count_documents(self) -> int:
-        row = self.conn.execute("SELECT COUNT(*) AS n FROM documents").fetchone()
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM documents"
+        ).fetchone()
         return int(row["n"])
-
-    def close(self) -> None:
-        self.conn.close()
