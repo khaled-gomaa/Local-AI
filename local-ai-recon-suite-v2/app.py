@@ -14,7 +14,7 @@ from flask import Flask, jsonify, request
 from ai.agent_router import plan
 from ai.rerank import rerank
 from recon.traffic import TrafficStore
-from ai.recon_insight import build_prompt, parse_result
+from ai.recon_insight import build_prompt, parse_result, render_insight
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -245,6 +245,7 @@ def generate_recon_insight(host: str) -> dict:
         }
         for item in evidence
     ]
+    result["display"] = render_insight(result)
     traffic_store.save_insight(host, snapshot, result)
     return result
 
@@ -449,7 +450,9 @@ def recon_analyze(host: str):
         return jsonify({"ok": False, "error": "invalid host"}), 400
     try:
         result = generate_recon_insight(host)
-        return jsonify({"ok": True, **result})
+        if "display" not in result:
+        result["display"] = render_insight(result)
+    return jsonify({"ok": True, **result})
     except Exception as exc:
         log.exception("recon insight failed")
         return jsonify({"ok": False, "error": str(exc)}), 503
