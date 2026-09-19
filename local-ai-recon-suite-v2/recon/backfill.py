@@ -5,6 +5,7 @@ from urllib.parse import urljoin
 import feedparser
 from bs4 import BeautifulSoup
 import requests
+from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from recon.common import (
@@ -101,7 +102,11 @@ def sync_sitemaps(state):
     added = 0
     homes = [x for values in CONFIG["html_indexes"].values() for x in values]
     for home in homes:
-        base = f"{home.split('/')[0]}//{home.split('/')[2]}"
+        parsed = urlparse(home)
+        if not parsed.scheme or not parsed.netloc:
+            print(f"[!] skipping malformed home: {home}")
+            continue
+        base = f"{parsed.scheme}://{parsed.netloc}"
         for sm in discover_sitemaps(base):
             urls = sitemap_urls(sm)
             print(f"[*] sitemap {sm}: {len(urls)} URLs")
@@ -194,8 +199,9 @@ def sync_hackerone(state):
                 "disclosed": attrs.get("disclosed", False)
             }
             # Local classifier decides whether the report is useful to Recon / web security.
+            summary = attrs.get("vulnerability_information") or title
             added += ingest(state, title, url, "HackerOne Hacktivity",
-                            attrs.get("disclosed_at"), json.dumps(extra), extra)
+                            attrs.get("disclosed_at"), summary, extra)
         if len(data) < H1_PAGE_SIZE:
             break
     return added
