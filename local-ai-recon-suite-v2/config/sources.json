@@ -18,11 +18,22 @@
     "Pentest Lab": "https://pentestlab.blog/feed/",
     "Snyk": "https://snyk.io/blog/feed/",
     "Detectify": "https://blog.detectify.com/feed/",
-    "Nuclei Templates": "https://github.com/projectdiscovery/nuclei-templates/releases.atom"
+    "Nuclei Templates": "https://github.com/projectdiscovery/nuclei-templates/releases.atom",
+    "Medium — Bug Bounty": "https://medium.com/feed/tag/bug-bounty",
+    "Medium — Reconnaissance": "https://medium.com/feed/tag/reconnaissance",
+    "Medium — Web Security": "https://medium.com/feed/tag/web-security",
+    "Medium — Penetration Testing": "https://medium.com/feed/tag/penetration-testing",
+    "Medium — Cybersecurity": "https://medium.com/feed/tag/cybersecurity"
   },
   "html_indexes": {
-    "HackerOne Blog": ["https://www.hackerone.com/blog"],
-    "Bugcrowd Blog": ["https://www.bugcrowd.com/blog/"],
-    "Bugcrowd CrowdStream": ["https://bugcrowd.com/crowdstream?filter=disclosures"]
+    "HackerOne Blog": [
+      "https://www.hackerone.com/blog"
+    ],
+    "Bugcrowd Blog": [
+      "https://www.bugcrowd.com/blog/"
+    ],
+    "Bugcrowd CrowdStream": [
+      "https://bugcrowd.com/crowdstream?filter=disclosures"
+    ]
   }
 }
