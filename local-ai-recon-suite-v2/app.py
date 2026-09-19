@@ -17,7 +17,7 @@ from recon.traffic import TrafficStore
 from recon.project_store import ProjectStore
 from recon.project_traffic import ProgramTrafficStore
 from ai.recon_insight import build_prompt, parse_result, render_insight
-from ai.shadow_team import run_shadow_team
+from ai.shadow_team import render_shadow_report, run_shadow_team
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -642,6 +642,40 @@ def project_shadow(program: str):
         })
     finally:
         store.close()
+
+@app.get("/projects/<program>/report/<host>")
+def project_report(program: str, host: str):
+    if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
+        return jsonify({"ok": False, "error": "invalid host"}), 400
+    store = ProjectStore()
+    try:
+        program_row = store.ensure_program(program)
+        findings = store.shadow_context(int(program_row["id"]), host)
+        if not findings:
+            return "No shadow review yet.", 404, {"Content-Type": "text/plain; charset=utf-8"}
+
+        lead = next(
+            (
+                item["result"]
+                for item in findings
+                if item["agent"] == "lead-reviewer"
+            ),
+            {},
+        )
+        specialists = [
+            item["result"]
+            for item in findings
+            if item["agent"] != "lead-reviewer"
+        ]
+        report = render_shadow_report({
+            "host": host.lower(),
+            "lead": lead,
+            "specialists": specialists,
+        })
+        return report, 200, {"Content-Type": "text/plain; charset=utf-8"}
+    finally:
+        store.close()
+
 
 @app.post("/projects/<program>/shadow/<host>/review")
 def project_shadow_review(program: str, host: str):
