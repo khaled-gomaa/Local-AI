@@ -397,6 +397,17 @@ class ProgramTrafficStore:
             ],
         }
 
+    def request_count(self, program_id: int, host: str) -> int:
+        row = self.conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM program_requests
+            WHERE program_id = ? AND host = ?
+            """,
+            (program_id, host.lower()),
+        ).fetchone()
+        return int(row["n"])
+
     def hosts(self, program_id: int) -> list[dict]:
         rows = self.conn.execute(
             """
