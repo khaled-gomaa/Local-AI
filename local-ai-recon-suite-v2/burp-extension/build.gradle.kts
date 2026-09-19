@@ -3,14 +3,14 @@ plugins {
 }
 
 group = "localrecon"
-version = "1.0.0"
+version = "1.0.1"
 
 repositories {
     mavenCentral()
 }
 
 dependencies {
-    implementation("net.portswigger.burp.extensions:montoya-api:2026.7")
+    compileOnly("net.portswigger.burp.extensions:montoya-api:2026.7")
 }
 
 java {
