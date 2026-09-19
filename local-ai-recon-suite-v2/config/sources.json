@@ -15,9 +15,10 @@
     "watchTowr Labs": "https://labs.watchtowr.com/rss/",
     "MDSec": "https://www.mdsec.co.uk/feed/",
     "Outflank": "https://www.outflank.nl/blog/feed/",
-    "PenTest Partners": "https://www.pentestpartners.com/security-blog/feed/",
     "Pentest Lab": "https://pentestlab.blog/feed/",
-    "Positive Security": "https://positive.security/blog/rss.xml"
+    "Snyk": "https://snyk.io/blog/feed/",
+    "Detectify": "https://blog.detectify.com/feed/",
+    "Nuclei Templates": "https://github.com/projectdiscovery/nuclei-templates/releases.atom"
   },
   "html_indexes": {
     "HackerOne Blog": ["https://www.hackerone.com/blog"],
