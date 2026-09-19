@@ -85,6 +85,17 @@ CREATE TABLE IF NOT EXISTS burp_candidates (
 );
 CREATE INDEX IF NOT EXISTS idx_burp_candidates_host ON burp_candidates(host, state);
 
+CREATE TABLE IF NOT EXISTS burp_insight_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    host TEXT NOT NULL,
+    snapshot_hash TEXT NOT NULL,
+    snapshot_json TEXT NOT NULL,
+    result_json TEXT NOT NULL,
+    generated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_burp_insight_history_host
+    ON burp_insight_history(host, generated_at DESC);
+
 CREATE TABLE IF NOT EXISTS burp_insights (
     host TEXT PRIMARY KEY,
     snapshot_hash TEXT NOT NULL,
@@ -229,7 +240,7 @@ def _parameter_signals(params: list[str], path: str) -> list[dict]:
         })
     return results
 
-def _security_signals(request_headers: str, response_headers: str, response_body: str, params: list[str]) -> list[dict]:
+def _security_signals(request_url: str, request_headers: str, response_headers: str, response_body: str, params: list[str]) -> list[dict]:
     results = []
     acao = _header(response_headers, "Access-Control-Allow-Origin")
     acac = _header(response_headers, "Access-Control-Allow-Credentials")
@@ -245,8 +256,8 @@ def _security_signals(request_headers: str, response_headers: str, response_body
         if low in SENSITIVE_NAMES:
             continue
         # Passive reflection signal only; values are not persisted.
-        token_pattern = re.compile(rf"[?&]{re.escape(param)}=([^&#\s]+)", re.I)
-        match = token_pattern.search(request_headers)
+        token_pattern = re.compile(rf"(?:[?&]{re.escape(param)}=|(?:^|[\s\"']){re.escape(param)}[=:])([^&#\s,}\"']+)", re.I)
+        match = token_pattern.search(request_url + "\n" + request_headers)
         if match:
             value = match.group(1)
             if 3 <= len(value) <= 80 and value.lower() in response_body.lower():
@@ -294,7 +305,7 @@ class TrafficStore:
 
         signals = (
             _parameter_signals(params, _endpoint_path(url))
-            + _security_signals(request_headers, response_headers, response_body, params)
+            + _security_signals(url, request_headers, response_headers, response_body, params)
         )
 
         title = ""
@@ -513,6 +524,21 @@ class TrafficStore:
     def save_insight(self, host: str, snapshot: dict, result: dict) -> None:
         payload = json.dumps(result, ensure_ascii=False, sort_keys=True)
         fingerprint = _hash(json.dumps(snapshot, ensure_ascii=False, sort_keys=True))
+        self.conn.execute(
+            """
+            INSERT INTO burp_insight_history(
+                host, snapshot_hash, snapshot_json, result_json, generated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                host,
+                fingerprint,
+                json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
+                payload,
+                _now(),
+            ),
+        )
         self.conn.execute(
             """
             INSERT INTO burp_insights(host, snapshot_hash, result_json, generated_at)
