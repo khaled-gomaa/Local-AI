@@ -168,6 +168,19 @@ class ReconStore:
         self.conn.commit()
         return "updated"
 
+    def insert_legacy_placeholder(self, url: str, record_id: str) -> None:
+        now = _now()
+        self.conn.execute(
+            """
+            INSERT OR IGNORE INTO documents(
+                url, content_hash, record_id, first_seen_at, last_seen_at, version
+            )
+            VALUES (?, ?, ?, ?, ?, 0)
+            """,
+            (url, "legacy:" + record_id, record_id, now, now),
+        )
+        self.conn.commit()
+
     def count_documents(self) -> int:
         row = self.conn.execute(
             "SELECT COUNT(*) AS n FROM documents"
