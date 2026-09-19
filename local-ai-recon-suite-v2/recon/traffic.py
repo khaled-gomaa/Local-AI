@@ -524,6 +524,13 @@ class TrafficStore:
     def save_insight(self, host: str, snapshot: dict, result: dict) -> None:
         payload = json.dumps(result, ensure_ascii=False, sort_keys=True)
         fingerprint = _hash(json.dumps(snapshot, ensure_ascii=False, sort_keys=True))
+        compact_snapshot = {
+            "host": snapshot.get("host"),
+            "pages": snapshot.get("pages", [])[:80],
+            "resource_groups": snapshot.get("resource_groups", {}),
+            "relationships": snapshot.get("relationships", [])[:150],
+            "candidates": snapshot.get("candidates", [])[:50],
+        }
         self.conn.execute(
             """
             INSERT INTO burp_insight_history(
@@ -534,7 +541,7 @@ class TrafficStore:
             (
                 host,
                 fingerprint,
-                json.dumps(snapshot, ensure_ascii=False, sort_keys=True),
+                json.dumps(compact_snapshot, ensure_ascii=False, sort_keys=True),
                 payload,
                 _now(),
             ),
