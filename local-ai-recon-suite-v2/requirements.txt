@@ -4,3 +4,4 @@ beautifulsoup4>=4.12.3
 trafilatura>=2.0.0
 chromadb>=1.0.0
 flask>=3.1.0
+pytest>=8.0.0
