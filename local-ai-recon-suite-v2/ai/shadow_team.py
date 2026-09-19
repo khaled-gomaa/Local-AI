@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
@@ -63,15 +64,23 @@ Never state that a vulnerability is confirmed without direct supporting evidence
 """
 
 def _parse(text: str) -> dict:
-    try:
-        obj = json.loads(text)
-        if isinstance(obj, dict):
-            return obj
-    except json.JSONDecodeError:
-        pass
+    raw = (text or '').strip()
+    candidates = [raw]
+    match = re.search(r'```(?:json)?\\s*(\\{.*?\\})\\s*```', raw, re.S)
+    if match:
+        candidates.insert(0, match.group(1))
+
+    for candidate in candidates:
+        try:
+            obj = json.loads(candidate)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            continue
+
     return {
-        "summary": text.strip()[:4000],
-        "items": [],
+        'summary': raw[:4000],
+        'items': [],
     }
 
 def run_shadow_team(
