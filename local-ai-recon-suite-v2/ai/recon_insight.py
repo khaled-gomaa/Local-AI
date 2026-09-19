@@ -147,14 +147,28 @@ def render_insight(result: dict[str, Any]) -> str:
         for item in params[:20]:
             eps = ", ".join(item.get("endpoints") or [])
             classes = ", ".join(item.get("candidate_classes") or [])
-            lines.append(f"- {item.get("parameter")}: {item.get("observation", "")} [confidence={item.get("confidence", 0):.2f}; candidates={classes}; endpoints={eps}]")
+            try:
+                confidence = float(item.get("confidence", 0))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            lines.append(
+                f"- {item.get('parameter')}: {item.get('observation', '')} "
+                f"[confidence={confidence:.2f}; candidates={classes}; endpoints={eps}]"
+            )
 
     hypotheses = result.get("hypotheses") or []
     if hypotheses:
         lines += ["", "HYPOTHESES"]
         for item in hypotheses[:20]:
             evidence = "; ".join(item.get("supporting_evidence") or [])
-            lines.append(f"- {item.get("class")} @ {item.get("location")} — confidence={item.get("confidence", 0):.2f}. {item.get("why", "")}")
+            try:
+                confidence = float(item.get("confidence", 0))
+            except (TypeError, ValueError):
+                confidence = 0.0
+            lines.append(
+                f"- {item.get('class')} @ {item.get('location')} — "
+                f"confidence={confidence:.2f}. {item.get('why', '')}"
+            )
             if evidence:
                 lines.append(f"  Evidence: {evidence}")
             lines.append(f"  Next safe check: {item.get("next_safe_check", "")}")
