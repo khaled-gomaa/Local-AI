@@ -11,6 +11,8 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 import trafilatura
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from bs4 import BeautifulSoup
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +27,19 @@ MIN_SCORE = int(os.getenv("RECON_MIN_SCORE", "8"))
 MIN_TEXT_CHARS = int(os.getenv("RECON_MIN_TEXT_CHARS", "400"))
 
 session = requests.Session()
+_retry = Retry(
+    total=int(os.getenv("RECON_HTTP_RETRIES", "3")),
+    connect=int(os.getenv("RECON_HTTP_CONNECT_RETRIES", "3")),
+    read=int(os.getenv("RECON_HTTP_READ_RETRIES", "2")),
+    status=int(os.getenv("RECON_HTTP_STATUS_RETRIES", "3")),
+    backoff_factor=float(os.getenv("RECON_HTTP_BACKOFF", "0.8")),
+    status_forcelist=(429, 500, 502, 503, 504),
+    allowed_methods=frozenset({"GET", "HEAD"}),
+    respect_retry_after_header=True,
+)
+_adapter = HTTPAdapter(max_retries=_retry, pool_connections=8, pool_maxsize=16)
+session.mount("http://", _adapter)
+session.mount("https://", _adapter)
 session.headers.update({
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/122.0 Safari/537.36",
@@ -185,10 +200,14 @@ def append_record(title, url, source, published, text, extra=None):
     if category == "ignore":
         return None
 
-    doc_id = sha(text)
     canon_url = canonical(url)
+    content_hash = sha(text)
+    # Versioned, URL-scoped record ID. This avoids cross-URL chunk collisions
+    # when two pages contain identical text.
+    doc_id = f"{sha(canon_url)[:16]}-{content_hash[:16]}"
     rec = {
         "id": doc_id,
+        "content_hash": content_hash,
         "title": title,
         "url": canon_url,
         "source": source,
@@ -209,7 +228,7 @@ def append_record(title, url, source, published, text, extra=None):
     with CHUNKS.open("a", encoding="utf-8") as f:
         for i, chunk in enumerate(chunks(text), 1):
             row = {
-                "id": f"{doc_id[:16]}-{i}",
+                "id": f"{doc_id}-{i}",
                 "doc_id": doc_id,
                 "rank": i,
                 "title": title,
