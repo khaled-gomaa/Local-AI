@@ -14,6 +14,7 @@ except ImportError as exc:
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from recon.common import CHUNKS, DOCS, DATA
+from recon.state_store import ReconStore
 
 OLLAMA = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434").rstrip("/")
 EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text")
@@ -42,6 +43,17 @@ def embed(texts):
     return data.get("embeddings", [])
 
 def load_latest_doc_ids():
+    # SQLite is authoritative for the active document version.
+    latest = {}
+    with ReconStore() as store:
+        rows = store.conn.execute(
+            "SELECT url, record_id FROM documents WHERE version > 0"
+        ).fetchall()
+        for row in rows:
+            latest[row["url"]] = row["record_id"]
+    return latest
+
+def load_legacy_latest_doc_ids():
     latest: dict[str, str] = {}
     if not DOCS.exists():
         return latest
