@@ -13,13 +13,25 @@ DOCS = DATA / "recon_documents.jsonl"
 CHUNKS = DATA / "recon_chunks.jsonl"
 STATE = DATA / "state.json"
 
-UA = "LocalAIReconSuite/2.0 (public technical content collector)"
 TIMEOUT = int(os.getenv("RECON_TIMEOUT", "25"))
 DELAY = float(os.getenv("RECON_DELAY", "0.7"))
-MIN_SCORE = int(os.getenv("RECON_MIN_SCORE", "12"))
+MIN_SCORE = int(os.getenv("RECON_MIN_SCORE", "8"))       # كان 12 → خُفّض
+MIN_TEXT_CHARS = int(os.getenv("RECON_MIN_TEXT_CHARS", "400"))  # كان 1000 → خُفّض
 
 session = requests.Session()
-session.headers.update({"User-Agent": UA})
+session.headers.update({
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/122.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Upgrade-Insecure-Requests": "1",
+})
 
 TERMS = {
     "recon": 10, "reconnaissance": 10, "passive reconnaissance": 12,
@@ -42,7 +54,7 @@ TERMS = {
     "scanner development": 10, "crawler development": 10, "burp extension": 8,
     "burp montoya": 10, "burp api": 8, "python security": 6,
     "go security": 6, "api discovery": 12, "api enumeration": 12,
-    "graphql discovery": 8, "web application testing": 5
+    "graphql discovery": 8, "web application testing": 5,
 }
 
 NEGATIVE = {
@@ -51,41 +63,45 @@ NEGATIVE = {
     "webinar": 12, "conference": 10, "event": 9, "award": 12,
     "winner": 12, "milestone": 12, "thanksgiving": 15, "hall of fame": 12,
     "community spotlight": 12, "program launch": 12, "bug bounty program": 8,
-    "customer story": 15, "quarterly": 10, "year in review": 10
+    "customer story": 15, "quarterly": 10, "year in review": 10,
 }
+
 
 def clean(s: str) -> str:
     return re.sub(r"\s+", " ", BeautifulSoup(s or "", "html.parser").get_text(" ", strip=True)).strip()
+
 
 def canonical(url: str) -> str:
     p = urlparse(url)
     return p._replace(query="", fragment="").geturl().rstrip("/")
 
+
 def sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
 
+
 def score_text(title: str, summary: str = "", text: str = ""):
     hay = f"{title}\n{summary}\n{text[:30000]}".lower()
-    positives = {k:v for k,v in TERMS.items() if k in hay}
-    negatives = {k:v for k,v in NEGATIVE.items() if k in hay}
+    positives = {k: v for k, v in TERMS.items() if k in hay}
+    negatives = {k: v for k, v in NEGATIVE.items() if k in hay}
     score = sum(positives.values()) - sum(negatives.values()) * 0.55
     categories = []
-    if any(k in hay for k in ("recon","reconnaissance","attack surface","asset discovery","subdomain")):
+    if any(k in hay for k in ("recon", "reconnaissance", "attack surface", "asset discovery", "subdomain")):
         categories.append("recon")
-    if any(k in hay for k in ("endpoint discovery","api discovery","parameter discovery","web application testing")):
+    if any(k in hay for k in ("endpoint discovery", "api discovery", "parameter discovery", "web application testing")):
         categories.append("web_security")
-    if any(k in hay for k in ("security automation","scanner development","crawler development","burp extension","burp montoya")):
+    if any(k in hay for k in ("security automation", "scanner development", "crawler development", "burp extension", "burp montoya")):
         categories.append("tooling_development")
     if "hackerone" in hay or "bugcrowd" in hay or "disclosure" in hay:
         categories.append("public_disclosures")
     return round(score, 2), sorted(set(categories)), list(positives)
 
+
 def classify(title, summary="", text=""):
     score, cats, keywords = score_text(title, summary, text)
     if score < MIN_SCORE:
         return "ignore", score, cats, keywords
-    # Priority: disclosures keep their own collection; multi-category content goes to primary category.
-    if "public_disclosures" in cats and score >= 8:
+    if "public_disclosures" in cats and score >= 6:
         category = "public_disclosures"
     elif "recon" in cats:
         category = "recon"
@@ -97,6 +113,7 @@ def classify(title, summary="", text=""):
         category = "ignore"
     return category, score, cats, keywords
 
+
 def load_state():
     if not STATE.exists():
         return {"urls": {}, "hashes": {}, "updated_at": None}
@@ -105,22 +122,45 @@ def load_state():
     except Exception:
         return {"urls": {}, "hashes": {}, "updated_at": None}
 
+
 def save_state(state):
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
     STATE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
-def extract(url):
+
+def extract(url: str) -> str | None:
+    """استخراج نص نظيف عبر session (بيحمل headers واقعية) + trafilatura."""
     try:
-        raw = trafilatura.fetch_url(url, no_ssl=False)
-        if not raw:
-            return None
-        text = trafilatura.extract(raw, include_comments=False, include_tables=True,
-                                   favor_precision=True, deduplicate=True)
-        if text and len(text) >= 1000:
-            return text.strip()
+        r = session.get(url, timeout=TIMEOUT, allow_redirects=True)
     except Exception as exc:
-        print(f"[!] extract failed: {url}: {exc}")
-    return None
+        print(f"[!] fetch failed: {url}: {exc}")
+        return None
+
+    if r.status_code >= 400:
+        print(f"[!] fetch HTTP {r.status_code}: {url}")
+        return None
+
+    try:
+        text = trafilatura.extract(
+            r.text,
+            url=url,
+            include_comments=False,
+            include_tables=True,
+            favor_precision=True,
+            deduplicate=True,
+        )
+    except Exception as exc:
+        print(f"[!] trafilatura error: {url}: {exc}")
+        return None
+
+    if not text:
+        print(f"[~] extract empty: {url}")
+        return None
+    if len(text) < MIN_TEXT_CHARS:
+        print(f"[~] extract short ({len(text)}): {url}")
+        return None
+    return text.strip()
+
 
 def chunks(text, size=1200, overlap=180):
     words = text.split()
@@ -132,18 +172,17 @@ def chunks(text, size=1200, overlap=180):
             break
         i = max(0, j - overlap)
 
+
 def append_record(title, url, source, published, text, extra=None):
     category, score, cats, keywords = classify(title, "", text)
     if category == "ignore":
         return None
     doc_id = sha(text)
-    if any(rec.get("id") == doc_id for rec in []):
-        return None
     rec = {
         "id": doc_id, "title": title, "url": canonical(url), "source": source,
         "published": published or datetime.now(timezone.utc).isoformat(),
         "category": category, "score": score, "topics": cats, "keywords": keywords,
-        "word_count": len(text.split()), "text": text
+        "word_count": len(text.split()), "text": text,
     }
     if extra:
         rec.update(extra)
@@ -155,7 +194,7 @@ def append_record(title, url, source, published, text, extra=None):
                 "id": f"{doc_id[:16]}-{i}", "doc_id": doc_id, "rank": 0,
                 "title": title, "url": canonical(url), "source": source,
                 "published": rec["published"], "category": category,
-                "score": score, "topics": cats, "keywords": keywords, "text": chunk
+                "score": score, "topics": cats, "keywords": keywords, "text": chunk,
             }
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
     return rec
