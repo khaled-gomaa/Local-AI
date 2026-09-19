@@ -204,6 +204,7 @@ def sync_hackerone(state):
                             attrs.get("disclosed_at"), summary, extra)
         if len(data) < H1_PAGE_SIZE:
             break
+        time.sleep(1.5)
     return added
 
 def main():
