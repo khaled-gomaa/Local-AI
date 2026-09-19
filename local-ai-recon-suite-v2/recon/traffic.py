@@ -337,6 +337,34 @@ class TrafficStore:
                 (host, source, target, relation, now, now),
             )
 
+        # Infer relationships between endpoints that reuse the same parameter names.
+        # This is passive graph enrichment; no additional requests are sent.
+        parameter_endpoints: dict[str, set[str]] = {}
+        for row in self.conn.execute(
+            "SELECT url, params_json FROM burp_requests WHERE host = ?",
+            (host,),
+        ).fetchall():
+            for param in json.loads(row["params_json"] or "[]"):
+                parameter_endpoints.setdefault(str(param), set()).add(row["url"])
+
+        for param, urls in parameter_endpoints.items():
+            if len(urls) < 2 or param in SENSITIVE_NAMES:
+                continue
+            ordered = sorted(urls)
+            anchor = ordered[0]
+            for target in ordered[1:]:
+                self.conn.execute(
+                    """
+                    INSERT INTO burp_edges(
+                        host, source_url, target_url, relation, first_seen, last_seen
+                    )
+                    VALUES (?, ?, ?, 'shared_parameter:' || ?, ?, ?)
+                    ON CONFLICT(host, source_url, target_url, relation)
+                    DO UPDATE SET last_seen = excluded.last_seen
+                    """,
+                    (host, anchor, target, param, now, now),
+                )
+
         for signal in signals:
             self.conn.execute(
                 """
@@ -422,9 +450,22 @@ class TrafficStore:
             (host,),
         ).fetchall()
 
+        # Resource hints from path structure, useful to the explainer when several
+        # endpoints belong to the same resource family.
+        resource_groups: dict[str, list[str]] = {}
+        for item in pages.values():
+            parts = [p for p in item["path"].split("/") if p]
+            if parts:
+                family = "/" + parts[0]
+                resource_groups.setdefault(family, []).append(item["path"])
+
         return {
             "host": host,
             "pages": sorted(pages.values(), key=lambda x: -x["observations"]),
+            "resource_groups": {
+                key: sorted(set(values))
+                for key, values in sorted(resource_groups.items())
+            },
             "relationships": [dict(row) for row in edge_rows],
             "candidates": [
                 {
