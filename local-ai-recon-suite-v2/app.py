@@ -11,6 +11,7 @@ from flask import Flask, jsonify, request
 
 from ai.agent_router import plan
 from ai.rerank import rerank
+from recon.traffic import TrafficStore
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -36,6 +37,7 @@ COLLECTION_NAMES: Final = (
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_BODY_BYTES
+traffic_store = TrafficStore()
 
 client = chromadb.PersistentClient(path=CHROMA_PATH)
 collections = {
@@ -315,6 +317,61 @@ def burp_analyze():
             }
             for x in evidence
         ],
+    })
+
+
+@app.post("/burp_event")
+def burp_event():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"ok": False, "error": "JSON object required"}), 400
+
+    request_raw = data.get("request")
+    if not isinstance(request_raw, str) or not request_raw.strip():
+        return jsonify({"ok": False, "error": "request must be a non-empty string"}), 400
+
+    if len(request_raw) > MAX_QUERY_CHARS:
+        return jsonify({"ok": False, "error": "request exceeds configured size limit"}), 413
+
+    try:
+        host = traffic_store.observe({
+            "message_id": data.get("message_id"),
+            "url": data.get("url"),
+            "request": redact(request_raw),
+            "response": redact(str(data.get("response") or "")),
+        })
+        snapshot = traffic_store.snapshot(host)
+        return jsonify({
+            "ok": True,
+            "host": host,
+            "pages": len(snapshot["pages"]),
+            "relationships": len(snapshot["relationships"]),
+            "candidates": snapshot["candidates"][:10],
+        })
+    except Exception as exc:
+        log.exception("burp event ingestion failed")
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+@app.get("/recon/hosts")
+def recon_hosts():
+    return jsonify({"ok": True, "hosts": traffic_store.hosts()})
+
+@app.get("/recon/<host>")
+def recon_host(host: str):
+    if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
+        return jsonify({"ok": False, "error": "invalid host"}), 400
+    snapshot = traffic_store.snapshot(host)
+    return jsonify({"ok": True, **snapshot})
+
+@app.get("/recon/<host>/candidates")
+def recon_candidates(host: str):
+    if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
+        return jsonify({"ok": False, "error": "invalid host"}), 400
+    snapshot = traffic_store.snapshot(host)
+    return jsonify({
+        "ok": True,
+        "host": host.lower(),
+        "candidates": snapshot["candidates"],
     })
 
 if __name__ == "__main__":
