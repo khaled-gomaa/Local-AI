@@ -2,6 +2,64 @@
 
 Local-first Recon/Discovery knowledge + RAG + Agent Router + Burp Montoya bridge.
 
+
+## Recon Intelligence Copilot
+
+The Burp extension can passively observe **in-scope** HTTP traffic without requiring the
+operator to paste or select individual requests. The local backend builds an application graph
+from observed traffic and generates English-only recon insights.
+
+Pipeline:
+
+```
+Burp in-scope traffic
+        ↓
+Passive observer
+        ↓
+SQLite application graph
+        ↓
+Endpoints / parameters / relationships
+        ↓
+Deterministic hypothesis signals
+        ↓
+Chroma + hybrid retrieval
+        ↓
+Ollama Recon Intelligence
+        ↓
+English recon insight
+```
+
+The insight includes:
+- application structure and resource families
+- relationships between observed pages/endpoints
+- repeated parameters and their cross-endpoint usage
+- interesting endpoints
+- hypothesis candidates with confidence and supporting evidence
+- gaps that prevent stronger conclusions
+- retrieved knowledge sources
+
+Automatic insight generation is intentionally throttled by `AUTO_INSIGHT_EVERY`
+(default: 8 observed requests) so the LLM is used for reasoning rather than per-request parsing.
+
+### Medium knowledge sources
+
+The ingestion pipeline also supports Medium topic RSS feeds for recon and security research,
+including Bug Bounty, Reconnaissance, Web Security, Penetration Testing, and Cybersecurity.
+Medium documents RSS feeds for topic pages and notes that stories behind its paywall are not
+available as full stories through RSS, so the knowledge layer uses only what is publicly available
+from the feed/page.
+
+### Useful endpoints
+
+```
+GET  /recon/hosts
+GET  /recon/<host>
+GET  /recon/<host>/candidates
+GET  /recon/<host>/insight
+POST /recon/<host>/analyze
+POST /burp_event
+```
+
 ## هدف المشروع
 
 - جمع محتوى أمني عام له قيمة تقنية في Recon / Discovery / Security Tooling / API Discovery / Web Security.
