@@ -1,0 +1,26 @@
+name: Recon Pipeline
+
+on:
+  push:
+    paths:
+      - "local-ai-recon-suite-v2/**"
+  pull_request:
+    paths:
+      - "local-ai-recon-suite-v2/**"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: local-ai-recon-suite-v2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: local-ai-recon-suite-v2/requirements.txt
+      - run: pip install -r requirements.txt
+      - run: python -m compileall recon
+      - run: python -m pytest -q tests
