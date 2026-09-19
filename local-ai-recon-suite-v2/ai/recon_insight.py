@@ -53,7 +53,7 @@ Return ONLY one valid JSON object with this schema:
     {
       "class": "string",
       "location": "endpoint + parameter or endpoint",
-      "confidence": 0.0
+      "confidence": 0.0,
       "why": "reasoned explanation",
       "supporting_evidence": ["observed evidence only"],
       "next_safe_check": "passive or read-only follow-up"
