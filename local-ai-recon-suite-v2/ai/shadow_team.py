@@ -187,3 +187,52 @@ Return ONLY JSON:
         "specialists": specialist,
         "lead": lead,
     }
+
+def render_shadow_report(result: dict) -> str:
+    host = result.get("host", "unknown")
+    lead = result.get("lead") or {}
+    lines = [f"Shadow Recon Review — {host}", ""]
+    summary = lead.get("operator_summary") or lead.get("summary")
+    if summary:
+        lines.append(str(summary))
+
+    missed = lead.get("you_may_have_missed") or []
+    if missed:
+        lines += ["", "YOU MAY HAVE MISSED"]
+        for item in missed[:15]:
+            lines.append(f"- {item.get("item", "Unknown")}: {item.get("why_it_matters", "")}")
+            evidence = "; ".join(item.get("evidence") or [])
+            if evidence:
+                lines.append(f"  Evidence: {evidence}")
+            lines.append(f"  Next manual check: {item.get("next_manual_check", "")}")
+
+    correlations = lead.get("cross_agent_correlations") or []
+    if correlations:
+        lines += ["", "CROSS-AGENT CORRELATIONS"]
+        for item in correlations[:15]:
+            lines.append(f"- {item.get("finding", "")} [agents: {", ".join(item.get("agents") or [])}]")
+
+    queue = lead.get("priority_review_queue") or []
+    if queue:
+        lines += ["", "PRIORITY REVIEW QUEUE"]
+        for item in queue[:15]:
+            lines.append(f"- {item.get("target")}: {item.get("reason", "")}")
+            evidence = "; ".join(item.get("evidence") or [])
+            if evidence:
+                lines.append(f"  Evidence: {evidence}")
+
+    changes = lead.get("session_changes") or []
+    if changes:
+        lines += ["", "SESSION CHANGES"]
+        lines.extend(f"- {item}" for item in changes[:15])
+
+    questions = lead.get("open_questions") or []
+    if questions:
+        lines += ["", "OPEN QUESTIONS"]
+        lines.extend(f"- {item}" for item in questions[:15])
+
+    lines += ["", "SPECIALIST REVIEWS"]
+    for specialist in result.get("specialists") or []:
+        lines.append(f"[{specialist.get("agent", "agent")}] {specialist.get("summary", "")}")
+
+    return "\n".join(lines).strip()
