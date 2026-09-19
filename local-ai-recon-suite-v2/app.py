@@ -450,9 +450,7 @@ def recon_analyze(host: str):
         return jsonify({"ok": False, "error": "invalid host"}), 400
     try:
         result = generate_recon_insight(host)
-        if "display" not in result:
-        result["display"] = render_insight(result)
-    return jsonify({"ok": True, **result})
+        return jsonify({"ok": True, **result})
     except Exception as exc:
         log.exception("recon insight failed")
         return jsonify({"ok": False, "error": str(exc)}), 503
