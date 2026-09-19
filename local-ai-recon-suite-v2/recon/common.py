@@ -1,22 +1,28 @@
 from __future__ import annotations
-import hashlib, json, os, re, time
+
+import hashlib
+import json
+import os
+import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
-import requests, trafilatura
+
+import requests
+import trafilatura
 from bs4 import BeautifulSoup
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
-DATA.mkdir(exist_ok=True)
 DOCS = DATA / "recon_documents.jsonl"
 CHUNKS = DATA / "recon_chunks.jsonl"
 STATE = DATA / "state.json"
 
 TIMEOUT = int(os.getenv("RECON_TIMEOUT", "25"))
 DELAY = float(os.getenv("RECON_DELAY", "0.7"))
-MIN_SCORE = int(os.getenv("RECON_MIN_SCORE", "8"))       # كان 12 → خُفّض
-MIN_TEXT_CHARS = int(os.getenv("RECON_MIN_TEXT_CHARS", "400"))  # كان 1000 → خُفّض
+MIN_SCORE = int(os.getenv("RECON_MIN_SCORE", "8"))
+MIN_TEXT_CHARS = int(os.getenv("RECON_MIN_TEXT_CHARS", "400"))
 
 session = requests.Session()
 session.headers.update({
@@ -66,36 +72,35 @@ NEGATIVE = {
     "customer story": 15, "quarterly": 10, "year in review": 10,
 }
 
-
 def clean(s: str) -> str:
     return re.sub(r"\s+", " ", BeautifulSoup(s or "", "html.parser").get_text(" ", strip=True)).strip()
-
 
 def canonical(url: str) -> str:
     p = urlparse(url)
     return p._replace(query="", fragment="").geturl().rstrip("/")
 
-
 def sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
 
+def has_term(text: str, term: str) -> bool:
+    pattern = rf"(?<!\w){re.escape(term)}(?!\w)"
+    return re.search(pattern, text, re.IGNORECASE) is not None
 
 def score_text(title: str, summary: str = "", text: str = ""):
-    hay = f"{title}\n{summary}\n{text[:30000]}".lower()
-    positives = {k: v for k, v in TERMS.items() if k in hay}
-    negatives = {k: v for k, v in NEGATIVE.items() if k in hay}
+    hay = f"{title}\n{summary}\n{text[:30000]}"
+    positives = {k: v for k, v in TERMS.items() if has_term(hay, k)}
+    negatives = {k: v for k, v in NEGATIVE.items() if has_term(hay, k)}
     score = sum(positives.values()) - sum(negatives.values()) * 0.55
     categories = []
-    if any(k in hay for k in ("recon", "reconnaissance", "attack surface", "asset discovery", "subdomain")):
+    if any(has_term(hay, k) for k in ("recon", "reconnaissance", "attack surface", "asset discovery", "subdomain")):
         categories.append("recon")
-    if any(k in hay for k in ("endpoint discovery", "api discovery", "parameter discovery", "web application testing")):
+    if any(has_term(hay, k) for k in ("endpoint discovery", "api discovery", "parameter discovery", "web application testing")):
         categories.append("web_security")
-    if any(k in hay for k in ("security automation", "scanner development", "crawler development", "burp extension", "burp montoya")):
+    if any(has_term(hay, k) for k in ("security automation", "scanner development", "crawler development", "burp extension", "burp montoya")):
         categories.append("tooling_development")
-    if "hackerone" in hay or "bugcrowd" in hay or "disclosure" in hay:
+    if any(has_term(hay, k) for k in ("hackerone", "bugcrowd", "disclosure")):
         categories.append("public_disclosures")
     return round(score, 2), sorted(set(categories)), list(positives)
-
 
 def classify(title, summary="", text=""):
     score, cats, keywords = score_text(title, summary, text)
@@ -113,23 +118,27 @@ def classify(title, summary="", text=""):
         category = "ignore"
     return category, score, cats, keywords
 
-
 def load_state():
     if not STATE.exists():
         return {"urls": {}, "hashes": {}, "updated_at": None}
     try:
-        return json.loads(STATE.read_text(encoding="utf-8"))
+        data = json.loads(STATE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("state root must be an object")
+        data.setdefault("urls", {})
+        data.setdefault("hashes", {})
+        data.setdefault("updated_at", None)
+        return data
     except Exception:
         return {"urls": {}, "hashes": {}, "updated_at": None}
 
-
 def save_state(state):
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
-    STATE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-
+    tmp = STATE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(STATE)
 
 def extract(url: str) -> str | None:
-    """استخراج نص نظيف عبر session (بيحمل headers واقعية) + trafilatura."""
     try:
         r = session.get(url, timeout=TIMEOUT, allow_redirects=True)
     except Exception as exc:
@@ -161,7 +170,6 @@ def extract(url: str) -> str | None:
         return None
     return text.strip()
 
-
 def chunks(text, size=1200, overlap=180):
     words = text.split()
     i = 0
@@ -172,29 +180,46 @@ def chunks(text, size=1200, overlap=180):
             break
         i = max(0, j - overlap)
 
-
 def append_record(title, url, source, published, text, extra=None):
     category, score, cats, keywords = classify(title, "", text)
     if category == "ignore":
         return None
+
     doc_id = sha(text)
+    canon_url = canonical(url)
     rec = {
-        "id": doc_id, "title": title, "url": canonical(url), "source": source,
+        "id": doc_id,
+        "title": title,
+        "url": canon_url,
+        "source": source,
         "published": published or datetime.now(timezone.utc).isoformat(),
-        "category": category, "score": score, "topics": cats, "keywords": keywords,
-        "word_count": len(text.split()), "text": text,
+        "category": category,
+        "score": score,
+        "topics": cats,
+        "keywords": keywords,
+        "word_count": len(text.split()),
+        "text": text,
     }
     if extra:
         rec.update(extra)
+
     with DOCS.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
     with CHUNKS.open("a", encoding="utf-8") as f:
         for i, chunk in enumerate(chunks(text), 1):
             row = {
-                "id": f"{doc_id[:16]}-{i}", "doc_id": doc_id, "rank": 0,
-                "title": title, "url": canonical(url), "source": source,
-                "published": rec["published"], "category": category,
-                "score": score, "topics": cats, "keywords": keywords, "text": chunk,
+                "id": f"{doc_id[:16]}-{i}",
+                "doc_id": doc_id,
+                "rank": i,
+                "title": title,
+                "url": canon_url,
+                "source": source,
+                "published": rec["published"],
+                "category": category,
+                "score": score,
+                "keywords": keywords,
+                "text": chunk,
             }
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
     return rec
