@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from hashlib import sha256
 from html import unescape
@@ -273,13 +274,27 @@ class TrafficStore:
     def __init__(self, path: Path = DB_PATH):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.executescript(SCHEMA)
-        self.conn.commit()
+        self._local = threading.local()
+
+    def _conn(self) -> sqlite3.Connection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(self.path)
+            conn.row_factory = sqlite3.Row
+            conn.executescript(SCHEMA)
+            conn.commit()
+            self._local.conn = conn
+        return conn
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        return self._conn()
 
     def close(self):
-        self.conn.close()
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
 
     def observe(self, event: dict) -> str:
         request_raw = str(event.get("request") or "")
