@@ -212,11 +212,20 @@ def retrieve(query: str, agent: str, k: int = 6) -> list[dict]:
     return rerank(query, hits, top_k=k)
 
 def generate_recon_insight(host: str) -> dict:
-    snapshot = traffic_store.snapshot(host)
-    if not snapshot["pages"]:
-        raise ValueError(f"No observed traffic for host: {host}")
+    # Use a connection local to the worker thread. The shared store is only used
+    # for request-thread operations such as scheduling and API reads.
+    store = TrafficStore()
+    try:
+        snapshot = store.snapshot(host)
+        if not snapshot["pages"]:
+            raise ValueError(f"No observed traffic for host: {host}")
 
-    query_parts = [host, "application architecture", "web attack surface", "endpoints parameters relationships"]
+        query_parts = [
+            host,
+            "application architecture",
+            "web attack surface",
+            "endpoints parameters relationships",
+        ]
     for page in snapshot["pages"][:30]:
         query_parts.append(page["path"])
         query_parts.extend(page["params"][:12])
@@ -224,30 +233,32 @@ def generate_recon_insight(host: str) -> dict:
         query_parts.append(candidate["class"])
         query_parts.append(candidate["url"])
 
-    query = " ".join(query_parts)
-    try:
-        evidence = retrieve(query, "recon", k=8)
-    except Exception as exc:
-        log.warning("knowledge retrieval failed for insight %s: %s", host, exc)
-        evidence = []
+        query = " ".join(query_parts)
+        try:
+            evidence = retrieve(query, "recon", k=8)
+        except Exception as exc:
+            log.warning("knowledge retrieval failed for insight %s: %s", host, exc)
+            evidence = []
 
-    previous = traffic_store.latest_insight(host)
-    system, user = build_prompt(snapshot, evidence, previous)
-    raw = ollama_chat(system, user)
-    result = parse_result(raw)
-    result["host"] = host.lower()
-    result["knowledge_sources"] = [
-        {
-            "title": item.get("title", ""),
-            "url": item.get("url", ""),
-            "source": item.get("source", ""),
-            "final_score": item.get("final_score", 0.0),
-        }
-        for item in evidence
-    ]
-    result["display"] = render_insight(result)
-    traffic_store.save_insight(host, snapshot, result)
-    return result
+        previous = store.latest_insight(host)
+        system, user = build_prompt(snapshot, evidence, previous)
+        raw = ollama_chat(system, user)
+        result = parse_result(raw)
+        result["host"] = host.lower()
+        result["knowledge_sources"] = [
+            {
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "source": item.get("source", ""),
+                "final_score": item.get("final_score", 0.0),
+            }
+            for item in evidence
+        ]
+        result["display"] = render_insight(result)
+        store.save_insight(host, snapshot, result)
+        return result
+    finally:
+        store.close()
 
 def _schedule_auto_insight(host: str) -> None:
     host = host.lower()
