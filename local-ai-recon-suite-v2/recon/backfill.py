@@ -1,16 +1,15 @@
 from __future__ import annotations
 import json, os, re, sys, time
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 import feedparser
 from bs4 import BeautifulSoup
 import requests
-from urllib.parse import urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from recon.common import (
     session, TIMEOUT, DELAY, DATA, load_state, save_state, canonical,
-    clean, extract, append_record, classify
+    clean, extract, append_record, classify,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,28 +19,56 @@ MAX_PAGES = int(os.getenv("RECON_BACKFILL_MAX_PAGES", "200"))
 H1_MAX_PAGES = int(os.getenv("H1_MAX_PAGES", "100"))
 H1_PAGE_SIZE = min(int(os.getenv("H1_PAGE_SIZE", "100")), 100)
 
+# قوائم الفلترة للـ sitemap
+_BLOCK = (
+    "/legal", "/privacy", "/terms", "/cookie", "/careers", "/jobs",
+    "/pricing", "/contact", "/about", "/login", "/signup",
+    "/tag/", "/author/", "/category/", "/page/",
+)
+_HINTS = (
+    "blog", "research", "disclosure", "report", "writeup", "advisory",
+    "security", "recon", "subdomain", "api", "vulnerability", "cve",
+    "bug-bounty", "hacktivity", "case-study", "attack-surface", "exploit",
+)
+
+
+def _useful_url(url: str) -> bool:
+    low = url.lower()
+    if any(b in low for b in _BLOCK):
+        return False
+    return any(h in low for h in _HINTS)
+
+
 def already(state, url):
     return canonical(url) in state["urls"]
+
 
 def ingest(state, title, url, source, published=None, summary="", extra=None):
     url = canonical(url)
     if not url or already(state, url) or len(state["urls"]) >= MAX_DOCS:
         return 0
-    quick_cat, quick_score, _, _ = classify(title, summary, "")
-    # Public disclosure sources are allowed through to full extraction.
-    if quick_cat == "ignore" and source not in ("HackerOne Hacktivity", "Bugcrowd Public Disclosure"):
-        return 0
+
+    # فلتر سريع: بس لو عندنا summary كافي، ومع عتبة متساهلة
+    if len(summary) >= 200:
+        quick_cat, quick_score, _, _ = classify(title, summary, "")
+        if quick_cat == "ignore" and quick_score < 0:
+            return 0
+
     text = extract(url)
     time.sleep(DELAY)
     if not text:
         return 0
+
     rec = append_record(title, url, source, published, text, extra)
-    if rec:
-        state["urls"][url] = rec["id"]
-        state["hashes"][rec["id"]] = url
-        print(f"[+] {rec['category']:<20} {source}: {title}")
-        return 1
-    return 0
+    if not rec:
+        print(f"[~] classified ignore: {title[:70]}")
+        return 0
+
+    state["urls"][url] = rec["id"]
+    state["hashes"][rec["id"]] = url
+    print(f"[+] {rec['category']:<20} {source}: {title[:70]}")
+    return 1
+
 
 def sync_rss(state):
     added = 0
@@ -63,6 +90,7 @@ def sync_rss(state):
             print(f"[!] RSS failed {source}: {exc}")
     return added
 
+
 def discover_sitemaps(home):
     paths = []
     try:
@@ -73,9 +101,13 @@ def discover_sitemaps(home):
                     paths.append(line.split(":", 1)[1].strip())
     except Exception:
         pass
-    for p in ("/sitemap.xml", "/sitemap_index.xml", "/sitemap/sitemap.xml"):
-        paths.append(urljoin(home, p))
+
+    # بس الأنماط الشائعة، مش كلها
+    if not paths:
+        paths.append(urljoin(home, "/sitemap.xml"))
+
     return list(dict.fromkeys(paths))
+
 
 def sitemap_urls(xml_url, seen_xml=None):
     seen_xml = seen_xml or set()
@@ -98,30 +130,34 @@ def sitemap_urls(xml_url, seen_xml=None):
         print(f"[!] GET {xml_url}: {exc}")
         return []
 
+
 def sync_sitemaps(state):
     added = 0
     homes = [x for values in CONFIG["html_indexes"].values() for x in values]
+    homes = list(dict.fromkeys(homes))  # ← إزالة تكرار
+
     for home in homes:
         parsed = urlparse(home)
         if not parsed.scheme or not parsed.netloc:
             print(f"[!] skipping malformed home: {home}")
             continue
         base = f"{parsed.scheme}://{parsed.netloc}"
+
         for sm in discover_sitemaps(base):
             urls = sitemap_urls(sm)
             print(f"[*] sitemap {sm}: {len(urls)} URLs")
+            matched = 0
             for url in urls:
                 if len(state["urls"]) >= MAX_DOCS:
                     break
-                # Avoid blindly ingesting every page; require URL hints first.
-                low = url.lower()
-                hints = ("blog", "research", "disclosure", "report", "security", "recon",
-                         "subdomain", "api", "web", "vulnerability")
-                if not any(h in low for h in hints):
+                if not _useful_url(url):
                     continue
-                title = low.rsplit("/", 1)[-1].replace("-", " ").replace("_", " ")
+                matched += 1
+                title = url.rstrip("/").rsplit("/", 1)[-1].replace("-", " ").replace("_", " ")
                 added += ingest(state, title, url, "Sitemap archive")
+            print(f"[*]   → {matched} passed URL filter")
     return added
+
 
 def sync_html_indexes(state):
     added = 0
@@ -131,16 +167,15 @@ def sync_html_indexes(state):
                 r = session.get(index_url, timeout=TIMEOUT)
                 r.raise_for_status()
                 soup = BeautifulSoup(r.text, "html.parser")
-                base = f"{r.url.split('/')[0]}//{r.url.split('/')[2]}"
+                parsed = urlparse(r.url)
+                base = f"{parsed.scheme}://{parsed.netloc}"
                 seen = set()
                 for a in soup.find_all("a", href=True):
                     href = canonical(urljoin(base, a["href"]))
-                    if href in seen:
+                    if href in seen or not href.startswith(base):
                         continue
                     seen.add(href)
                     anchor = clean(a.get_text(" ", strip=True))
-                    if not href.startswith(base):
-                        continue
                     if source == "Bugcrowd CrowdStream" and "/disclosures/" not in href:
                         continue
                     if source == "HackerOne Blog" and "/blog/" not in href:
@@ -152,6 +187,7 @@ def sync_html_indexes(state):
             except Exception as exc:
                 print(f"[!] index failed {source} {index_url}: {exc}")
     return added
+
 
 def sync_hackerone(state):
     user, token = os.getenv("H1_API_USERNAME"), os.getenv("H1_API_TOKEN")
@@ -167,23 +203,25 @@ def sync_hackerone(state):
             "page[number]": page,
             "page[size]": H1_PAGE_SIZE,
             "sort": "-disclosed_at",
-            "queryString": "disclosed:true"
+            "queryString": "disclosed:true",
         }
         try:
             r = session.get(endpoint, params=params, auth=(user, token),
-                            headers={"Accept":"application/json"}, timeout=TIMEOUT)
+                            headers={"Accept": "application/json"}, timeout=TIMEOUT)
             r.raise_for_status()
             payload = r.json()
         except Exception as exc:
             print(f"[!] HackerOne page {page} failed: {exc}")
             break
+
         data = payload.get("data", [])
         if not data:
             break
         print(f"[*] HackerOne Hacktivity page {page}: {len(data)} reports")
+
         for item in data:
             attrs = item.get("attributes", {})
-            title, url = attrs.get("title",""), attrs.get("url")
+            title, url = attrs.get("title", ""), attrs.get("url")
             if not title or not url:
                 continue
             reporter = ((item.get("relationships", {}).get("reporter") or {}).get("data") or {}).get("attributes", {}).get("username")
@@ -196,16 +234,18 @@ def sync_hackerone(state):
                 "awarded": attrs.get("total_awarded_amount"),
                 "reporter": reporter,
                 "program": program,
-                "disclosed": attrs.get("disclosed", False)
+                "disclosed": attrs.get("disclosed", False),
             }
-            # Local classifier decides whether the report is useful to Recon / web security.
-            summary = attrs.get("vulnerability_information") or title
+            # ✅ FIX: نستخدم عنوان وصفي مش JSON
+            summary = attrs.get("vulnerability_information") or f"{title} {program or ''} {attrs.get('cwe') or ''}"
             added += ingest(state, title, url, "HackerOne Hacktivity",
                             attrs.get("disclosed_at"), summary, extra)
+
         if len(data) < H1_PAGE_SIZE:
             break
-        time.sleep(1.5)
+        time.sleep(1.5)  # احترام rate limit
     return added
+
 
 def main():
     DATA.mkdir(exist_ok=True)
@@ -218,6 +258,7 @@ def main():
     added += sync_sitemaps(state)
     save_state(state)
     print(f"[+] Backfill finished. Existing={before}, new={added}, total={len(state['urls'])}")
+
 
 if __name__ == "__main__":
     main()
