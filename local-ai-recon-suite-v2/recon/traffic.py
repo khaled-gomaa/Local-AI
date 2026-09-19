@@ -526,6 +526,23 @@ class TrafficStore:
         )
         self.conn.commit()
 
+    def request_count_since(self, host: str, since: str | None) -> int:
+        if since is None:
+            row = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM burp_requests WHERE host = ?",
+                (host.lower(),),
+            ).fetchone()
+        else:
+            row = self.conn.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM burp_requests
+                WHERE host = ? AND observed_at > ?
+                """,
+                (host.lower(), since),
+            ).fetchone()
+        return int(row["n"])
+
     def latest_insight(self, host: str) -> dict | None:
         row = self.conn.execute(
             "SELECT * FROM burp_insights WHERE host = ?",
