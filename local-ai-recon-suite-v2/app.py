@@ -465,7 +465,19 @@ def recon_insight(host: str):
             "ok": False,
             "error": "No insight yet. Accumulate more in-scope traffic or call POST /recon/<host>/analyze."
         }), 404
+    if "display" not in result:
+        result["display"] = render_insight(result)
     return jsonify({"ok": True, **result})
+
+@app.get("/recon/<host>/insight.txt")
+def recon_insight_text(host: str):
+    if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
+        return jsonify({"ok": False, "error": "invalid host"}), 400
+    result = traffic_store.latest_insight(host)
+    if not result:
+        return "No insight yet.", 404, {"Content-Type": "text/plain; charset=utf-8"}
+    display = result.get("display") or render_insight(result)
+    return display, 200, {"Content-Type": "text/plain; charset=utf-8"}
 if __name__ == "__main__":
     log.info("starting on 127.0.0.1:%s", os.getenv("PORT", "5000"))
     app.run(
