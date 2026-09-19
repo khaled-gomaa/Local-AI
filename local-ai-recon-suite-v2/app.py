@@ -14,7 +14,10 @@ from flask import Flask, jsonify, request
 from ai.agent_router import plan
 from ai.rerank import rerank
 from recon.traffic import TrafficStore
+from recon.project_store import ProjectStore
+from recon.project_traffic import ProgramTrafficStore
 from ai.recon_insight import build_prompt, parse_result, render_insight
+from ai.shadow_team import run_shadow_team
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -42,9 +45,13 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_BODY_BYTES
 traffic_store = TrafficStore()
 insight_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="recon-insight")
+shadow_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="shadow-team")
 insight_lock = Lock()
 insight_running: set[str] = set()
+shadow_running: set[str] = set()
+shadow_last_count: dict[str, int] = {}
 AUTO_INSIGHT_EVERY: Final = int(os.getenv("AUTO_INSIGHT_EVERY", "8"))
+AUTO_SHADOW_EVERY: Final = int(os.getenv("AUTO_SHADOW_EVERY", "12"))
 
 client = chromadb.PersistentClient(path=CHROMA_PATH)
 collections = {
@@ -281,6 +288,63 @@ def _schedule_auto_insight(host: str) -> None:
 
     insight_executor.submit(worker)
 
+
+def _program_session(program: str):
+    store = ProjectStore()
+    program_row, session_row = store.get_or_create_active_session(program)
+    return store, program_row, session_row
+
+def _schedule_shadow_review(
+    program_id: int,
+    session_id: int,
+    host: str,
+) -> None:
+    key = f"{program_id}:{host.lower()}"
+    with ProgramTrafficStore() as traffic:
+        count = traffic.request_count(program_id, host)
+    previous = shadow_last_count.get(key, 0)
+    if count < AUTO_SHADOW_EVERY or count - previous < AUTO_SHADOW_EVERY:
+        return
+
+    with insight_lock:
+        if key in shadow_running:
+            return
+        shadow_running.add(key)
+        shadow_last_count[key] = count
+
+    def worker():
+        try:
+            pstore = ProjectStore()
+            traffic = ProgramTrafficStore()
+            try:
+                snapshot = traffic.snapshot(program_id, host)
+                context = pstore.program_context(
+                    pstore.program_by_id(program_id)["slug"]
+                )
+                previous_findings = pstore.shadow_context(program_id, host)
+                run_shadow_team(
+                    program_id=program_id,
+                    session_id=session_id,
+                    host=host,
+                    snapshot=snapshot,
+                    program_context=context,
+                    previous_findings=previous_findings,
+                    retrieve=retrieve,
+                    chat=ollama_chat,
+                    save_finding=pstore.save_shadow_finding,
+                )
+                log.info("shadow team review completed for %s/%s", program_id, host)
+            finally:
+                traffic.close()
+                pstore.close()
+        except Exception as exc:
+            log.exception("shadow team failed for %s: %s", key, exc)
+        finally:
+            with insight_lock:
+                shadow_running.discard(key)
+
+    shadow_executor.submit(worker)
+
 def _health_status():
     status = {
         "ok": False,
@@ -404,31 +468,207 @@ def burp_event():
         return jsonify({"ok": False, "error": "JSON object required"}), 400
 
     request_raw = data.get("request")
+    program = str(data.get("program") or "").strip()
+    if not program:
+        return jsonify({
+            "ok": False,
+            "error": "program is required so traffic can be attached to the correct program memory",
+        }), 400
+
     if not isinstance(request_raw, str) or not request_raw.strip():
         return jsonify({"ok": False, "error": "request must be a non-empty string"}), 400
 
     if len(request_raw) > MAX_QUERY_CHARS:
         return jsonify({"ok": False, "error": "request exceeds configured size limit"}), 413
 
+    pstore = None
+    traffic = None
     try:
-        host = traffic_store.observe({
-            "message_id": data.get("message_id"),
-            "url": data.get("url"),
-            "request": redact(request_raw),
-            "response": redact(str(data.get("response") or "")),
-        })
-        snapshot = traffic_store.snapshot(host)
-        _schedule_auto_insight(host)
+        pstore, program_row, session_row = _program_session(program)
+        traffic = ProgramTrafficStore()
+        host = traffic.observe(
+            program_id=int(program_row["id"]),
+            session_id=int(session_row["id"]),
+            event={
+                "message_id": data.get("message_id"),
+                "url": data.get("url"),
+                "request": redact(request_raw),
+                "response": redact(str(data.get("response") or "")),
+            },
+        )
+        pstore.touch_host(int(program_row["id"]), host)
+
+        snapshot = traffic.snapshot(int(program_row["id"]), host)
+        _schedule_shadow_review(
+            int(program_row["id"]),
+            int(session_row["id"]),
+            host,
+        )
+        shadow = pstore.shadow_context(int(program_row["id"]), host)
         return jsonify({
             "ok": True,
+            "program": program_row["name"],
+            "program_id": int(program_row["id"]),
+            "session_id": int(session_row["id"]),
+            "session_date": session_row["session_date"],
+            "session_folder": session_row["folder"],
             "host": host,
             "pages": len(snapshot["pages"]),
             "relationships": len(snapshot["relationships"]),
             "candidates": snapshot["candidates"][:10],
+            "shadow_agents": sorted({item["agent"] for item in shadow}),
         })
     except Exception as exc:
         log.exception("burp event ingestion failed")
         return jsonify({"ok": False, "error": str(exc)}), 400
+    finally:
+        if traffic:
+            traffic.close()
+        if pstore:
+            pstore.close()
+
+@app.get("/projects")
+def projects():
+    store = ProjectStore()
+    try:
+        return jsonify({"ok": True, "projects": store.list_programs()})
+    finally:
+        store.close()
+
+@app.post("/projects/<program>/start")
+def project_start(program: str):
+    if not re.fullmatch(r"[A-Za-z0-9._ -]{1,80}", program):
+        return jsonify({"ok": False, "error": "invalid program name"}), 400
+    store, program_row, session_row = _program_session(program)
+    try:
+        return jsonify({
+            "ok": True,
+            "program": dict(program_row),
+            "session": dict(session_row),
+            "context": store.program_context(program),
+        })
+    finally:
+        store.close()
+
+@app.get("/projects/<program>/sessions")
+def project_sessions(program: str):
+    store = ProjectStore()
+    try:
+        return jsonify({
+            "ok": True,
+            "program": program,
+            "sessions": store.list_sessions(program),
+        })
+    finally:
+        store.close()
+
+@app.get("/projects/<program>")
+def project_context(program: str):
+    store = ProjectStore()
+    try:
+        return jsonify({"ok": True, **store.program_context(program)})
+    finally:
+        store.close()
+
+@app.post("/projects/<program>/note")
+def project_note(program: str):
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"ok": False, "error": "JSON object required"}), 400
+    title = str(data.get("title") or "").strip()
+    body = str(data.get("body") or "").strip()
+    kind = str(data.get("kind") or "operator").strip()
+    if not title or not body:
+        return jsonify({"ok": False, "error": "title and body are required"}), 400
+    store = ProjectStore()
+    try:
+        store.add_note(
+            program=program,
+            title=title,
+            body=body,
+            kind=kind,
+            session_date=data.get("session_date"),
+        )
+        return jsonify({"ok": True})
+    finally:
+        store.close()
+
+@app.get("/projects/<program>/hosts")
+def project_hosts(program: str):
+    store = ProjectStore()
+    traffic = ProgramTrafficStore()
+    try:
+        program_row = store.ensure_program(program)
+        return jsonify({
+            "ok": True,
+            "program": program_row["name"],
+            "hosts": traffic.hosts(int(program_row["id"])),
+        })
+    finally:
+        traffic.close()
+        store.close()
+
+@app.get("/projects/<program>/recon/<host>")
+def project_recon(program: str, host: str):
+    if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
+        return jsonify({"ok": False, "error": "invalid host"}), 400
+    store = ProjectStore()
+    traffic = ProgramTrafficStore()
+    try:
+        program_row = store.ensure_program(program)
+        snapshot = traffic.snapshot(int(program_row["id"]), host)
+        return jsonify({
+            "ok": True,
+            "program": program_row["name"],
+            "shadow": store.shadow_context(int(program_row["id"]), host),
+            **snapshot,
+        })
+    finally:
+        traffic.close()
+        store.close()
+
+@app.get("/projects/<program>/shadow")
+def project_shadow(program: str):
+    store = ProjectStore()
+    try:
+        program_row = store.ensure_program(program)
+        return jsonify({
+            "ok": True,
+            "program": program_row["name"],
+            "findings": store.shadow_context(int(program_row["id"])),
+        })
+    finally:
+        store.close()
+
+@app.post("/projects/<program>/shadow/<host>/review")
+def project_shadow_review(program: str, host: str):
+    if not re.fullmatch(r"[A-Za-z0-9.-]+", host):
+        return jsonify({"ok": False, "error": "invalid host"}), 400
+    store, program_row, session_row = _program_session(program)
+    traffic = ProgramTrafficStore()
+    try:
+        snapshot = traffic.snapshot(int(program_row["id"]), host)
+        if not snapshot["pages"]:
+            return jsonify({"ok": False, "error": "no observed traffic"}), 404
+        result = run_shadow_team(
+            program_id=int(program_row["id"]),
+            session_id=int(session_row["id"]),
+            host=host,
+            snapshot=snapshot,
+            program_context=store.program_context(program),
+            previous_findings=store.shadow_context(int(program_row["id"]), host),
+            retrieve=retrieve,
+            chat=ollama_chat,
+            save_finding=store.save_shadow_finding,
+        )
+        return jsonify({"ok": True, **result})
+    except Exception as exc:
+        log.exception("manual shadow review failed")
+        return jsonify({"ok": False, "error": str(exc)}), 503
+    finally:
+        traffic.close()
+        store.close()
+
 
 @app.get("/recon/hosts")
 def recon_hosts():
