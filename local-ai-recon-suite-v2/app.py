@@ -212,8 +212,6 @@ def retrieve(query: str, agent: str, k: int = 6) -> list[dict]:
     return rerank(query, hits, top_k=k)
 
 def generate_recon_insight(host: str) -> dict:
-    # Use a connection local to the worker thread. The shared store is only used
-    # for request-thread operations such as scheduling and API reads.
     store = TrafficStore()
     try:
         snapshot = store.snapshot(host)
@@ -226,12 +224,12 @@ def generate_recon_insight(host: str) -> dict:
             "web attack surface",
             "endpoints parameters relationships",
         ]
-    for page in snapshot["pages"][:30]:
-        query_parts.append(page["path"])
-        query_parts.extend(page["params"][:12])
-    for candidate in snapshot["candidates"][:20]:
-        query_parts.append(candidate["class"])
-        query_parts.append(candidate["url"])
+        for page in snapshot["pages"][:30]:
+            query_parts.append(page["path"])
+            query_parts.extend(page["params"][:12])
+        for candidate in snapshot["candidates"][:20]:
+            query_parts.append(candidate["class"])
+            query_parts.append(candidate["url"])
 
         query = " ".join(query_parts)
         try:
@@ -259,7 +257,6 @@ def generate_recon_insight(host: str) -> dict:
         return result
     finally:
         store.close()
-
 def _schedule_auto_insight(host: str) -> None:
     host = host.lower()
     latest = traffic_store.latest_insight(host)
