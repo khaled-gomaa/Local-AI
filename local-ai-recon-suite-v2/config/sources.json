@@ -23,7 +23,10 @@
     "Medium — Reconnaissance": "https://medium.com/feed/tag/reconnaissance",
     "Medium — Web Security": "https://medium.com/feed/tag/web-security",
     "Medium — Penetration Testing": "https://medium.com/feed/tag/penetration-testing",
-    "Medium — Cybersecurity": "https://medium.com/feed/tag/cybersecurity"
+    "Medium — Cybersecurity": "https://medium.com/feed/tag/cybersecurity",
+    "Medium — Security Testing": "https://medium.com/feed/tag/security-testing",
+    "Medium — Shodan": "https://medium.com/feed/tag/shodan",
+    "Medium — OSINT": "https://medium.com/feed/tag/osint"
   },
   "html_indexes": {
     "HackerOne Blog": [
