@@ -30,7 +30,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest.BodyPublishers;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.time.Duration;
-import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -186,7 +185,7 @@ public class Extension implements BurpExtension {
 
     private void loadInsight(String host) {
         if (!host.isBlank()) {
-            requestBackend("/recon/" + host + "/insight", null, false);
+            requestBackend("/recon/" + host + "/insight.txt", null, false);
         }
     }
 
