@@ -45,6 +45,7 @@ AGENT_SKILLS: dict[str, list[str]] = {
     "parameter": ["parameter-intelligence", "api-security-testing"],
     "history": ["history-review", "web-security-testing"],
     "lead_review": ["history-review", "web-security-testing"],
+    "gap": ["coverage-gap-intelligence", "history-review"],
 }
 
 _AGENT_FILES: dict[str, str] = {
@@ -56,6 +57,7 @@ _AGENT_FILES: dict[str, str] = {
     "parameter": "agents/parameter-agent.md",
     "history": "agents/history-reviewer.md",
     "lead_review": "agents/lead-reviewer.md",
+    "gap": "agents/gap-agent.md",
 }
 
 
