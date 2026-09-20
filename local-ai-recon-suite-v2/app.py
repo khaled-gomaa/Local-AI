@@ -359,7 +359,7 @@ def _schedule_shadow_review(
                 context = pstore.program_context(program_row["slug"])
                 context["traffic"] = traffic.program_summary(program_id)
                 previous_findings = pstore.shadow_context(program_id, host)
-                run_shadow_team(
+                result = run_shadow_team(
                     program_id=program_id,
                     session_id=session_id,
                     host=host,
@@ -372,6 +372,20 @@ def _schedule_shadow_review(
                     record_findings=pstore.record_shadow_findings,
                     learning_context=pstore.finding_learning_context(program_id, host),
                 )
+                handoff = pstore.session_handoff(
+                    program_id,
+                    session_id,
+                    traffic.program_summary(program_id),
+                )
+                handoff["attention_queue"] = build_attention_queue(
+                    findings=pstore.list_findings(
+                        program_row["name"],
+                        limit=100,
+                    ),
+                    new_endpoints=handoff["delta"]["new_endpoints"],
+                    new_hosts=handoff["delta"]["new_hosts"],
+                )
+                pstore.save_session_handoff(session_id, handoff)
                 log.info("shadow team review completed for %s/%s", program_id, host)
             finally:
                 traffic.close()
@@ -831,6 +845,7 @@ def project_shadow_review(program: str, host: str):
             record_findings=store.record_shadow_findings,
             learning_context=store.finding_learning_context(int(program_row["id"]), host),
         )
+        result["report"] = render_shadow_report(result)
         return jsonify({"ok": True, **result})
     except Exception as exc:
         log.exception("manual shadow review failed")
