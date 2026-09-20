@@ -731,7 +731,9 @@ class ProjectStore:
                     "summary": json.loads(row["summary_json"]),
                 }
 
+        program_row = self.program_by_id(program_id)
         handoff = {
+            "program": dict(program_row) if program_row else {"id": program_id},
             "session": dict(current) if current else None,
             "previous_session": dict(previous) if previous else None,
             "current_stats": current_stats,
