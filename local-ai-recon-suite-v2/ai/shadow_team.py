@@ -179,14 +179,6 @@ Return ONLY JSON:
             }
             for e in evidence
         ]
-        save_finding(program_id, session_id, name, host, result)
-        if record_findings:
-            record_findings(
-                program_id=program_id,
-                session_id=session_id,
-                host=host,
-                agent_result=result,
-            )
         return name, result
 
     results = []
@@ -199,6 +191,19 @@ Return ONLY JSON:
             results.append(future.result())
 
     specialist = [result for _, result in results]
+
+    # SQLite writes stay on the orchestrator thread; agent reasoning remains parallel.
+    for result in specialist:
+        agent_name = str(result.get("agent") or "shadow-agent")
+        save_finding(program_id, session_id, agent_name, host, result)
+        if record_findings:
+            record_findings(
+                program_id=program_id,
+                session_id=session_id,
+                host=host,
+                agent_result=result,
+            )
+
     lead_user = json.dumps(
         {
             **base,
