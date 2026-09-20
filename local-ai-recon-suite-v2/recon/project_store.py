@@ -715,11 +715,28 @@ class ProjectStore:
             limit=100,
         )
 
+        previous_handoff = None
+        if previous:
+            row = self.conn.execute(
+                """
+                SELECT summary_json, generated_at
+                FROM session_handoffs
+                WHERE session_id = ?
+                """,
+                (previous["id"],),
+            ).fetchone()
+            if row:
+                previous_handoff = {
+                    "generated_at": row["generated_at"],
+                    "summary": json.loads(row["summary_json"]),
+                }
+
         handoff = {
             "session": dict(current) if current else None,
             "previous_session": dict(previous) if previous else None,
             "current_stats": current_stats,
             "previous_stats": previous_stats,
+            "previous_handoff": previous_handoff,
             "delta": {
                 "new_hosts": sorted(current_hosts - previous_hosts),
                 "new_endpoints": sorted(current_paths - previous_paths),
