@@ -219,7 +219,8 @@ def render_shadow_report(result: dict) -> str:
     if correlations:
         lines += ["", "CROSS-AGENT CORRELATIONS"]
         for item in correlations[:15]:
-            lines.append(f"- {item.get("finding", "")} [agents: {", ".join(item.get("agents") or [])}]")
+            agents = ", ".join(item.get("agents") or [])
+            lines.append(f"- {item.get("finding", "")} [agents: {agents}]")
 
     queue = lead.get("priority_review_queue") or []
     if queue:
