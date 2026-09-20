@@ -301,12 +301,20 @@ def _schedule_shadow_review(
 ) -> None:
     key = f"{program_id}:{host.lower()}"
     traffic = ProgramTrafficStore()
+    pstore = ProjectStore()
     try:
         count = traffic.request_count(program_id, host)
+        snapshot = traffic.snapshot(program_id, host)
+        previous_findings = pstore.shadow_context(program_id, host)
+        has_signal = bool(snapshot.get("candidates"))
     finally:
         traffic.close()
-    previous = shadow_last_count.get(key, 0)
-    if count < AUTO_SHADOW_EVERY or count - previous < AUTO_SHADOW_EVERY:
+        pstore.close()
+
+    previous_count = shadow_last_count.get(key, 0)
+    first_review_ready = not previous_findings and (count >= 3 or has_signal)
+    periodic_review_ready = count - previous_count >= AUTO_SHADOW_EVERY
+    if not first_review_ready and not periodic_review_ready:
         return
 
     with insight_lock:
@@ -321,9 +329,10 @@ def _schedule_shadow_review(
             traffic = ProgramTrafficStore()
             try:
                 snapshot = traffic.snapshot(program_id, host)
-                context = pstore.program_context(
-                    pstore.program_by_id(program_id)["slug"]
-                )
+                program_row = pstore.program_by_id(program_id)
+                if program_row is None:
+                    return
+                context = pstore.program_context(program_row["slug"])
                 previous_findings = pstore.shadow_context(program_id, host)
                 run_shadow_team(
                     program_id=program_id,
@@ -347,7 +356,6 @@ def _schedule_shadow_review(
                 shadow_running.discard(key)
 
     shadow_executor.submit(worker)
-
 def _health_status():
     status = {
         "ok": False,
