@@ -397,6 +397,37 @@ class ProgramTrafficStore:
             ],
         }
 
+    def program_summary(self, program_id: int) -> dict:
+        hosts = self.conn.execute(
+            """
+            SELECT host,
+                   COUNT(*) AS requests,
+                   COUNT(DISTINCT path) AS pages,
+                   MAX(observed_at) AS last_seen
+            FROM program_requests
+            WHERE program_id = ?
+            GROUP BY host
+            ORDER BY last_seen DESC
+            """,
+            (program_id,),
+        ).fetchall()
+
+        recent = self.conn.execute(
+            """
+            SELECT host, method, path, status_code, observed_at
+            FROM program_requests
+            WHERE program_id = ?
+            ORDER BY observed_at DESC
+            LIMIT 150
+            """,
+            (program_id,),
+        ).fetchall()
+
+        return {
+            "hosts": [dict(row) for row in hosts],
+            "recent_requests": [dict(row) for row in recent],
+        }
+
     def request_count(self, program_id: int, host: str) -> int:
         row = self.conn.execute(
             """
