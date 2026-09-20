@@ -182,15 +182,32 @@ class ProgramTrafficStore:
             ),
         )
 
-        for target, relation in _extract_links(url, response_body, response_type):
-            if (urlparse(target).hostname or "").lower() != host:
+        for target, relation in _extract_links(
+            url,
+            response_headers + "\n\n" + response_body,
+            response_type,
+        ):
+            target_host = (urlparse(target).hostname or "").lower()
+            if not target_host:
                 continue
+
+            target_value = (
+                _endpoint_path(target)
+                if target_host == host
+                else target
+            )
+            edge_relation = (
+                relation
+                if target_host == host
+                else "cross_host_reference"
+            )
+
             self._edge(
                 program_id,
                 host,
                 url,
-                target,
-                relation,
+                target_value,
+                edge_relation,
                 f"Observed in {method} {url}",
                 now,
             )
@@ -452,7 +469,10 @@ class ProgramTrafficStore:
         ).fetchall()
 
         result = []
+        seen_hosts = set()
+
         for row in rows:
+            seen_hosts.add(row["host"])
             candidates = self.conn.execute(
                 """
                 SELECT COUNT(*) AS n
@@ -475,5 +495,34 @@ class ProgramTrafficStore:
                 "pages": int(pages),
                 "candidates": int(candidates),
                 "last_seen": row["last_seen"],
+                "source": "observed_traffic",
             })
+
+        edge_rows = self.conn.execute(
+            """
+            SELECT target_url, MAX(last_seen) AS last_seen
+            FROM program_edges
+            WHERE program_id = ?
+              AND relation = 'cross_host_reference'
+            GROUP BY target_url
+            ORDER BY last_seen DESC
+            """,
+            (program_id,),
+        ).fetchall()
+
+        for edge in edge_rows:
+            target_host = (urlparse(edge["target_url"]).hostname or "").lower()
+            if not target_host or target_host in seen_hosts:
+                continue
+
+            seen_hosts.add(target_host)
+            result.append({
+                "host": target_host,
+                "requests": 0,
+                "pages": 0,
+                "candidates": 0,
+                "last_seen": edge["last_seen"],
+                "source": "cross_host_reference",
+            })
+
         return result
