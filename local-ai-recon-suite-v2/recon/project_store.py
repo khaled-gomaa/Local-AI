@@ -5,12 +5,14 @@ import os
 import re
 import sqlite3
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data"
 PROJECT_ROOT = DATA / "projects"
 DB_PATH = Path(os.getenv("RECON_DB_PATH", str(DATA / "recon.db")))
+PROJECT_TIMEZONE = os.getenv("PROJECT_TIMEZONE", "Africa/Cairo")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS programs (
@@ -113,6 +115,13 @@ CREATE TABLE IF NOT EXISTS project_notes (
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+def _today_local() -> str:
+    try:
+        tz = ZoneInfo(PROJECT_TIMEZONE)
+    except Exception:
+        tz = timezone.utc
+    return datetime.now(tz).date().isoformat()
+
 def slugify(value: str) -> str:
     value = value.strip().lower()
     value = re.sub(r"[^a-z0-9]+", "-", value)
@@ -183,7 +192,7 @@ class ProjectStore:
         session_day: str | None = None,
     ) -> sqlite3.Row:
         row = self.ensure_program(program)
-        day = session_day or date.today().isoformat()
+        day = session_day or _today_local()
 
         try:
             date.fromisoformat(day)
@@ -278,7 +287,7 @@ class ProjectStore:
 
     def get_or_create_active_session(self, program: str) -> tuple[sqlite3.Row, sqlite3.Row]:
         program_row = self.ensure_program(program)
-        session_row = self.ensure_session(program, date.today().isoformat())
+        session_row = self.ensure_session(program, _today_local())
         return program_row, session_row
 
     def save_shadow_finding(
