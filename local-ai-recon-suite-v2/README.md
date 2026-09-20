@@ -60,6 +60,83 @@ POST /recon/<host>/analyze
 POST /burp_event
 ```
 
+
+## Manual-First Shadow Team
+
+The intended operating model is **manual operator + passive AI reviewers**.
+
+You browse and test the authorized program manually. The Burp extension observes only in-scope
+traffic and stores it under a persistent program identity. The AI does not launch scanners or
+modify requests automatically.
+
+### Program memory model
+
+A program is a long-lived identity:
+
+```
+data/projects/
+└── 2026-09-20/
+    └── facebook/
+        ├── session.json
+        └── shadow/
+            ├── subdomain-agent.json
+            ├── content-agent.json
+            ├── parameter-agent.json
+            ├── history-reviewer.json
+            └── lead-reviewer.json
+```
+
+Starting the same program on another day creates another daily session folder while reusing the
+same program ID and accumulated application graph.
+
+For example:
+
+```
+Facebook — 2026-09-20  →  program memory
+Facebook — 2026-09-21  →  same program memory + new daily session
+```
+
+### Shadow agents
+
+The passive team currently contains:
+
+- **Subdomain Agent** — reviews known hosts, alternate origins, API/authentication hosts, and
+  cross-host clues already visible in program evidence.
+- **Content Agent** — reviews routes, status-code patterns, scripts, source maps, forms, and
+  likely content-discovery gaps.
+- **Parameter Agent** — reviews repeated parameters, identifiers, URL-like inputs, reflection
+  signals, and parameter/resource relationships.
+- **History Reviewer** — compares accumulated program sessions and looks for missed surfaces,
+  stale assumptions, and unresolved questions.
+- **Lead Reviewer** — correlates specialist findings into a manual review queue.
+
+All output is English-only.
+
+### Daily workflow
+
+1. Enter the program name in the Burp extension.
+2. Click **Start / Resume Today**.
+3. Continue your normal manual workflow in Burp/browser.
+4. The extension passively forwards in-scope traffic.
+5. The application graph grows in the background.
+6. Shadow agents periodically review the accumulated evidence.
+7. The Lead Reviewer highlights what you may have missed and gives safe manual checks.
+
+Useful endpoints:
+
+```
+POST /projects/<program>/start
+GET  /projects
+GET  /projects/<program>
+GET  /projects/<program>/sessions
+GET  /projects/<program>/hosts
+GET  /projects/<program>/recon/<host>
+GET  /projects/<program>/shadow
+GET  /projects/<program>/report/<host>
+POST /projects/<program>/shadow/<host>/review
+POST /projects/<program>/note
+```
+
 ## هدف المشروع
 
 - جمع محتوى أمني عام له قيمة تقنية في Recon / Discovery / Security Tooling / API Discovery / Web Security.
