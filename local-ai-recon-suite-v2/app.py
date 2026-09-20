@@ -333,6 +333,7 @@ def _schedule_shadow_review(
                 if program_row is None:
                     return
                 context = pstore.program_context(program_row["slug"])
+                context["traffic"] = traffic.program_summary(program_id)
                 previous_findings = pstore.shadow_context(program_id, host)
                 run_shadow_team(
                     program_id=program_id,
@@ -745,7 +746,10 @@ def project_shadow_review(program: str, host: str):
             session_id=int(session_row["id"]),
             host=host,
             snapshot=snapshot,
-            program_context=store.program_context(program),
+            program_context={
+                **store.program_context(program),
+                "traffic": traffic.program_summary(int(program_row["id"])),
+            },
             previous_findings=store.shadow_context(int(program_row["id"]), host),
             retrieve=retrieve,
             chat=ollama_chat,
