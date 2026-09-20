@@ -84,3 +84,61 @@ def test_program_traffic_isolated_between_programs(tmp_path):
     finally:
         traffic.close()
         store.close()
+
+
+def test_session_handoff_reports_changes_and_open_items(tmp_path):
+    db = tmp_path / "recon.db"
+
+    store = ProjectStore(db)
+    traffic = ProgramTrafficStore(db)
+    try:
+        program, day1 = store.ensure_session("Facebook", "2026-09-20")
+        program2, day2 = store.ensure_session("Facebook", "2026-09-21")
+
+        request_one = (
+            "GET /api/profile HTTP/1.1\r\n"
+            "Host: target.test\r\n"
+            "Accept: text/html\r\n\r\n"
+        )
+        response_one = (
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/html\r\n\r\n"
+            "<html><title>Profile</title></html>"
+        )
+
+        traffic.observe(
+            program_id=program["id"],
+            session_id=day1["id"],
+            event={"message_id": "day1", "request": request_one, "response": response_one},
+        )
+
+        request_two = (
+            "GET /api/orders?user_id=10 HTTP/1.1\r\n"
+            "Host: target.test\r\n"
+            "Accept: application/json\r\n\r\n"
+        )
+        response_two = (
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: application/json\r\n\r\n"
+            "{\"items\":[]}"
+        )
+
+        traffic.observe(
+            program_id=program2["id"],
+            session_id=day2["id"],
+            event={"message_id": "day2", "request": request_two, "response": response_two},
+        )
+
+        handoff = store.session_handoff(
+            program2["id"],
+            day2["id"],
+            traffic.program_summary(program2["id"]),
+        )
+
+        assert "/api/orders" in handoff["delta"]["new_endpoints"]
+        assert handoff["previous_session"]["session_date"] == "2026-09-20"
+        assert handoff["current_stats"]["requests"] == 1
+        assert handoff["previous_stats"]["requests"] == 1
+    finally:
+        traffic.close()
+        store.close()
