@@ -22,5 +22,5 @@ jobs:
           cache: pip
           cache-dependency-path: local-ai-recon-suite-v2/requirements.txt
       - run: pip install -r requirements.txt
-      - run: python -m compileall recon
+      - run: python -m compileall recon ai app.py
       - run: python -m pytest -q tests
