@@ -90,7 +90,7 @@ def render_briefing(handoff: dict) -> str:
     current = handoff.get("current_stats") or {}
     previous = handoff.get("previous_stats") or {}
     delta = handoff.get("delta") or {}
-    program = (handoff.get("session") or {}).get("program_id", "unknown")
+    program = (handoff.get("program") or {}).get("name", "unknown")
     session = (handoff.get("session") or {}).get("session_date", "today")
 
     lines = [
