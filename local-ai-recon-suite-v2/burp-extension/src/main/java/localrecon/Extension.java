@@ -188,7 +188,7 @@ public class Extension implements BurpExtension {
         );
 
         health.addActionListener(e ->
-                requestBackend("/health", null, false)
+                requestBackend("/health", null, false, null)
         );
 
         startSession.addActionListener(e -> {
@@ -205,7 +205,8 @@ public class Extension implements BurpExtension {
             requestBackend(
                     "/projects/" + pathPart(program) + "/start",
                     "{}",
-                    false
+                    false,
+                    "briefing"
             );
             refreshHosts();
         });
@@ -266,7 +267,7 @@ public class Extension implements BurpExtension {
         String raw = request.toString();
         String json = "{\"request\":" + quoteJson(raw) + "}";
 
-        requestBackend("/burp_analyze", json, false);
+        requestBackend("/burp_analyze", json, false, "analysis");
     }
 
     private void refreshHosts() {
@@ -277,7 +278,8 @@ public class Extension implements BurpExtension {
         requestBackend(
                 "/projects/" + pathPart(activeProgram) + "/hosts",
                 null,
-                true
+                true,
+                null
         );
     }
 
@@ -290,7 +292,8 @@ public class Extension implements BurpExtension {
                 "/projects/" + pathPart(activeProgram)
                         + "/report/" + pathPart(host),
                 null,
-                false
+                false,
+                null
         );
     }
 
@@ -415,7 +418,8 @@ public class Extension implements BurpExtension {
     private void requestBackend(
             String path,
             String json,
-            boolean hostList) {
+            boolean hostList,
+            String textField) {
 
         String base = backend.getText().replaceAll("/$", "");
 
@@ -442,6 +446,13 @@ public class Extension implements BurpExtension {
                             && response.statusCode() >= 200
                             && response.statusCode() < 300) {
                         updateHostsFromJson(response.body());
+                    } else if (textField != null
+                            && response.statusCode() >= 200
+                            && response.statusCode() < 300) {
+                        output.setText(extractJsonStringField(
+                                response.body(),
+                                textField
+                        ));
                     } else {
                         output.setText(response.body());
                     }
@@ -456,6 +467,52 @@ public class Extension implements BurpExtension {
                 );
             }
         });
+    }
+
+    private String extractJsonStringField(
+            String body,
+            String field) {
+        String marker = "\"" + field + "\":\"";
+        int start = body.indexOf(marker);
+
+        if (start < 0) {
+            return body;
+        }
+
+        start += marker.length();
+
+        StringBuilder value = new StringBuilder();
+        boolean escaped = false;
+
+        for (int i = start; i < body.length(); i++) {
+            char ch = body.charAt(i);
+
+            if (escaped) {
+                switch (ch) {
+                    case 'n' -> value.append('\n');
+                    case 'r' -> value.append('\r');
+                    case 't' -> value.append('\t');
+                    case '\\' -> value.append('\\');
+                    case '"' -> value.append('"');
+                    default -> value.append(ch);
+                }
+                escaped = false;
+                continue;
+            }
+
+            if (ch == '\\') {
+                escaped = true;
+                continue;
+            }
+
+            if (ch == '"') {
+                break;
+            }
+
+            value.append(ch);
+        }
+
+        return value.toString();
     }
 
     private void updateHostsFromJson(String body) {
