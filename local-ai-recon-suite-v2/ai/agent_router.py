@@ -40,12 +40,22 @@ AGENT_SKILLS: dict[str, list[str]] = {
     "recon": ["web-security-testing", "scanning-tools"],
     "api_security": ["api-security-testing", "web-security-testing"],
     "llm_redteam": ["llm-redteam"],
+    "subdomain": ["subdomain-intelligence", "web-security-testing"],
+    "content": ["content-discovery-intelligence", "web-security-testing"],
+    "parameter": ["parameter-intelligence", "api-security-testing"],
+    "history": ["history-review", "web-security-testing"],
+    "lead_review": ["history-review", "web-security-testing"],
 }
 
 _AGENT_FILES: dict[str, str] = {
     "recon": "agents/recon-orchestrator.md",
     "api_security": "agents/api-security.md",
     "llm_redteam": "agents/llm-redteam-specialist.md",
+    "subdomain": "agents/subdomain-agent.md",
+    "content": "agents/content-agent.md",
+    "parameter": "agents/parameter-agent.md",
+    "history": "agents/history-reviewer.md",
+    "lead_review": "agents/lead-reviewer.md",
 }
 
 
