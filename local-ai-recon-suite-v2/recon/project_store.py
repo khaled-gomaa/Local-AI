@@ -86,6 +86,17 @@ CREATE TABLE IF NOT EXISTS findings (
 CREATE INDEX IF NOT EXISTS idx_findings_program
     ON findings(program_id, host, state, last_seen_at DESC);
 
+CREATE TABLE IF NOT EXISTS session_handoffs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL UNIQUE,
+    summary_json TEXT NOT NULL,
+    generated_at TEXT NOT NULL,
+    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_handoffs_session
+    ON session_handoffs(session_id, generated_at DESC);
+
 CREATE TABLE IF NOT EXISTS project_notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     program_id INTEGER NOT NULL,
@@ -587,6 +598,194 @@ class ProjectStore:
             (program_id, host.lower(), max(1, min(limit, 200))),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def previous_session(self, program_id: int, session_id: int) -> sqlite3.Row | None:
+        return self.conn.execute(
+            """
+            SELECT *
+            FROM sessions
+            WHERE program_id = ? AND id != ?
+            ORDER BY session_date DESC, id DESC
+            LIMIT 1
+            """,
+            (program_id, session_id),
+        ).fetchone()
+
+    def session_stats(self, program_id: int, session_id: int) -> dict:
+        row = self.conn.execute(
+            """
+            SELECT
+                COUNT(*) AS requests,
+                COUNT(DISTINCT host) AS hosts,
+                COUNT(DISTINCT path) AS endpoints
+            FROM (
+                SELECT host, path
+                FROM program_requests
+                WHERE program_id = ? AND session_id = ?
+            )
+            """,
+            (program_id, session_id),
+        ).fetchone()
+
+        param_rows = self.conn.execute(
+            """
+            SELECT params_json
+            FROM program_requests
+            WHERE program_id = ? AND session_id = ?
+            """,
+            (program_id, session_id),
+        ).fetchall()
+        params = set()
+        for item in param_rows:
+            params.update(json.loads(item["params_json"] or "[]"))
+
+        states = self.conn.execute(
+            """
+            SELECT state, COUNT(*) AS n
+            FROM findings
+            WHERE program_id = ? AND session_id = ?
+            GROUP BY state
+            """,
+            (program_id, session_id),
+        ).fetchall()
+
+        return {
+            "requests": int(row["requests"]),
+            "hosts": int(row["hosts"]),
+            "endpoints": int(row["endpoints"]),
+            "parameters": len(params),
+            "finding_states": {
+                item["state"]: int(item["n"])
+                for item in states
+            },
+        }
+
+    def session_handoff(
+        self,
+        program_id: int,
+        session_id: int,
+        traffic_summary: dict,
+    ) -> dict:
+        current = self.conn.execute(
+            "SELECT * FROM sessions WHERE id = ? AND program_id = ?",
+            (session_id, program_id),
+        ).fetchone()
+        previous = self.previous_session(program_id, session_id)
+
+        current_stats = self.session_stats(program_id, session_id)
+        previous_stats = (
+            self.session_stats(program_id, previous["id"])
+            if previous
+            else None
+        )
+
+        current_hosts = {
+            item["host"]
+            for item in self.conn.execute(
+                "SELECT DISTINCT host FROM program_requests WHERE program_id = ? AND session_id = ?",
+                (program_id, session_id),
+            ).fetchall()
+        }
+        previous_hosts = {
+            item["host"]
+            for item in self.conn.execute(
+                "SELECT DISTINCT host FROM program_requests WHERE program_id = ? AND session_id = ?",
+                (program_id, previous["id"]),
+            ).fetchall()
+        } if previous else set()
+
+        current_paths = {
+            item["path"]
+            for item in self.conn.execute(
+                "SELECT DISTINCT path FROM program_requests WHERE program_id = ? AND session_id = ?",
+                (program_id, session_id),
+            ).fetchall()
+        }
+        previous_paths = {
+            item["path"]
+            for item in self.conn.execute(
+                "SELECT DISTINCT path FROM program_requests WHERE program_id = ? AND session_id = ?",
+                (program_id, previous["id"]),
+            ).fetchall()
+        } if previous else set()
+
+        open_findings = self.list_findings(
+            self.program_by_id(program_id)["name"],
+            state="needs_review",
+            limit=100,
+        )
+
+        handoff = {
+            "session": dict(current) if current else None,
+            "previous_session": dict(previous) if previous else None,
+            "current_stats": current_stats,
+            "previous_stats": previous_stats,
+            "delta": {
+                "new_hosts": sorted(current_hosts - previous_hosts),
+                "new_endpoints": sorted(current_paths - previous_paths),
+                "requests_delta": (
+                    current_stats["requests"] - previous_stats["requests"]
+                    if previous_stats else current_stats["requests"]
+                ),
+                "endpoint_delta": (
+                    current_stats["endpoints"] - previous_stats["endpoints"]
+                    if previous_stats else current_stats["endpoints"]
+                ),
+                "parameter_delta": (
+                    current_stats["parameters"] - previous_stats["parameters"]
+                    if previous_stats else current_stats["parameters"]
+                ),
+            },
+            "open_review_items": open_findings[:30],
+            "traffic": traffic_summary,
+        }
+        return handoff
+
+    def save_session_handoff(self, session_id: int, summary: dict) -> None:
+        now = _now()
+        self.conn.execute(
+            """
+            INSERT INTO session_handoffs(session_id, summary_json, generated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(session_id)
+            DO UPDATE SET summary_json = excluded.summary_json,
+                          generated_at = excluded.generated_at
+            """,
+            (
+                session_id,
+                json.dumps(summary, ensure_ascii=False),
+                now,
+            ),
+        )
+        self.conn.commit()
+
+        row = self.conn.execute(
+            "SELECT folder FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        if row:
+            folder = Path(row["folder"])
+            folder.mkdir(parents=True, exist_ok=True)
+            (folder / "handoff.json").write_text(
+                json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+    def latest_session_handoff(self, session_id: int) -> dict | None:
+        row = self.conn.execute(
+            """
+            SELECT summary_json, generated_at
+            FROM session_handoffs
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "generated_at": row["generated_at"],
+            "summary": json.loads(row["summary_json"]),
+        }
 
     def add_note(
         self,
