@@ -5,6 +5,8 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
+from ai.agent_router import load_skill
+
 AGENTS = {
     "subdomain-agent": {
         "focus": "Hosts, subdomains, alternate origins, authentication hosts, API hosts, and cross-host clues visible in the observed program data.",
@@ -120,9 +122,15 @@ def run_shadow_team(
             }, ensure_ascii=False)
         )
         evidence = retrieve(query, "recon", k=6)
+        skill_text = load_skill(spec["skill"])
         system = f"""You are the {name} shadow agent in a manual security assessment.
 
 Focus: {spec['focus']}
+
+The specialist skill reference is:
+--- SKILL START ---
+{skill_text[:8000]}
+--- SKILL END ---
 
 OUTPUT LANGUAGE: English only.
 You only review passive evidence supplied to you. Never execute active actions.
