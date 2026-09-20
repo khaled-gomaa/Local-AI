@@ -208,6 +208,7 @@ public class Extension implements BurpExtension {
                     false,
                     "briefing"
             );
+            workers.submit(this::syncProxyHistory);
             refreshHosts();
         });
 
