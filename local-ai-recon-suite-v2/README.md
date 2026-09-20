@@ -41,6 +41,9 @@ The insight includes:
 Automatic insight generation is intentionally throttled by `AUTO_INSIGHT_EVERY`
 (default: 8 observed requests) so the LLM is used for reasoning rather than per-request parsing.
 
+Shadow review is independently throttled by `AUTO_SHADOW_EVERY` (default: 12 requests),
+with an early first review when a new program has enough evidence or a deterministic candidate signal.
+
 ### Medium knowledge sources
 
 The ingestion pipeline also supports Medium topic RSS feeds for recon and security research,
@@ -100,6 +103,7 @@ Facebook — 2026-09-21  →  same program memory + new daily session
 
 The passive team currently contains:
 
+- **Gap Agent** — identifies coverage gaps where the application model suggests an area exists but it has not been meaningfully reviewed.
 - **Subdomain Agent** — reviews known hosts, alternate origins, API/authentication hosts, and
   cross-host clues already visible in program evidence.
 - **Content Agent** — reviews routes, status-code patterns, scripts, source maps, forms, and
@@ -129,9 +133,13 @@ POST /projects/<program>/start
 GET  /projects
 GET  /projects/<program>
 GET  /projects/<program>/sessions
+GET  /projects/<program>/briefing
+POST /projects/<program>/handoff
 GET  /projects/<program>/hosts
 GET  /projects/<program>/recon/<host>
 GET  /projects/<program>/shadow
+GET  /projects/<program>/findings
+PATCH /projects/<program>/findings/<id>
 GET  /projects/<program>/report/<host>
 POST /projects/<program>/shadow/<host>/review
 POST /projects/<program>/note
