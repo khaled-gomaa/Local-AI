@@ -60,6 +60,32 @@ CREATE TABLE IF NOT EXISTS shadow_findings (
 CREATE INDEX IF NOT EXISTS idx_shadow_findings_program
     ON shadow_findings(program_id, host, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS findings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    program_id INTEGER NOT NULL,
+    session_id INTEGER,
+    agent TEXT NOT NULL,
+    host TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    category TEXT NOT NULL,
+    target TEXT NOT NULL,
+    title TEXT NOT NULL,
+    statement TEXT NOT NULL,
+    evidence_json TEXT NOT NULL DEFAULT '[]',
+    confidence REAL NOT NULL DEFAULT 0.0,
+    state TEXT NOT NULL DEFAULT 'needs_review',
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    reviewed_at TEXT,
+    operator_note TEXT NOT NULL DEFAULT '',
+    UNIQUE(program_id, fingerprint),
+    FOREIGN KEY(program_id) REFERENCES programs(id) ON DELETE CASCADE,
+    FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_findings_program
+    ON findings(program_id, host, state, last_seen_at DESC);
+
 CREATE TABLE IF NOT EXISTS project_notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     program_id INTEGER NOT NULL,
@@ -325,6 +351,243 @@ class ProjectStore:
         ).fetchall()
         return [dict(row) for row in rows]
 
+    def upsert_finding(
+        self,
+        *,
+        program_id: int,
+        session_id: int,
+        agent: str,
+        host: str,
+        category: str,
+        target: str,
+        title: str,
+        statement: str,
+        evidence: list[str],
+        confidence: float = 0.0,
+    ) -> int:
+        from hashlib import sha256
+
+        normalized = "|".join([
+            agent.strip().lower(),
+            host.strip().lower(),
+            category.strip().lower(),
+            target.strip().lower(),
+        ])
+        fingerprint = sha256(normalized.encode("utf-8", "ignore")).hexdigest()[:24]
+        now = _now()
+        confidence = max(0.0, min(float(confidence or 0.0), 1.0))
+        row = self.conn.execute(
+            """
+            SELECT id, state, operator_note
+            FROM findings
+            WHERE program_id = ? AND fingerprint = ?
+            """,
+            (program_id, fingerprint),
+        ).fetchone()
+
+        if row is None:
+            self.conn.execute(
+                """
+                INSERT INTO findings(
+                    program_id, session_id, agent, host, fingerprint,
+                    category, target, title, statement, evidence_json,
+                    confidence, first_seen_at, last_seen_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    program_id, session_id, agent, host.lower(), fingerprint,
+                    category, target, title, statement,
+                    json.dumps(evidence[:20], ensure_ascii=False),
+                    confidence, now, now,
+                ),
+            )
+            self.conn.commit()
+            return int(self.conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+        self.conn.execute(
+            """
+            UPDATE findings
+            SET session_id = ?,
+                agent = ?,
+                title = ?,
+                statement = ?,
+                evidence_json = ?,
+                confidence = MAX(confidence, ?),
+                last_seen_at = ?
+            WHERE id = ?
+            """,
+            (
+                session_id, agent, title, statement,
+                json.dumps(evidence[:20], ensure_ascii=False),
+                confidence, now, row["id"],
+            ),
+        )
+        self.conn.commit()
+        return int(row["id"])
+
+    def record_shadow_findings(
+        self,
+        *,
+        program_id: int,
+        session_id: int,
+        host: str,
+        agent_result: dict,
+    ) -> list[int]:
+        agent = str(agent_result.get("agent") or "shadow-agent")
+        ids: list[int] = []
+        for item in agent_result.get("missed_items") or []:
+            target = str(item.get("target") or "").strip()
+            reason = str(item.get("reason") or "").strip()
+            if not target or not reason:
+                continue
+            ids.append(
+                self.upsert_finding(
+                    program_id=program_id,
+                    session_id=session_id,
+                    agent=agent,
+                    host=host,
+                    category="missed_review",
+                    target=target,
+                    title=f"Manual review suggested: {target}",
+                    statement=reason,
+                    evidence=[str(x) for x in item.get("evidence") or []],
+                    confidence=float(item.get("confidence") or 0.0),
+                )
+            )
+        return ids
+
+    def list_findings(
+        self,
+        program: str,
+        host: str | None = None,
+        state: str | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        program_row = self._program_row(program)
+        if not program_row:
+            return []
+
+        where = ["program_id = ?"]
+        params: list = [program_row["id"]]
+        if host:
+            where.append("host = ?")
+            params.append(host.lower())
+        allowed_states = {
+            "observed", "hypothesis", "needs_review",
+            "tested", "confirmed", "rejected", "not_interesting",
+        }
+        if state and state in allowed_states:
+            where.append("state = ?")
+            params.append(state)
+
+        params.append(max(1, min(int(limit), 500)))
+        rows = self.conn.execute(
+            f"""
+            SELECT *
+            FROM findings
+            WHERE {" AND ".join(where)}
+            ORDER BY
+                CASE state
+                    WHEN 'needs_review' THEN 0
+                    WHEN 'hypothesis' THEN 1
+                    WHEN 'observed' THEN 2
+                    WHEN 'tested' THEN 3
+                    WHEN 'confirmed' THEN 4
+                    WHEN 'rejected' THEN 5
+                    WHEN 'not_interesting' THEN 6
+                    ELSE 7
+                END,
+                confidence DESC,
+                last_seen_at DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+
+        return [
+            {
+                **dict(row),
+                "evidence": json.loads(row["evidence_json"] or "[]"),
+            }
+            for row in rows
+        ]
+
+    def update_finding_state(
+        self,
+        *,
+        program: str,
+        finding_id: int,
+        state: str,
+        operator_note: str = "",
+    ) -> dict | None:
+        allowed = {
+            "observed", "hypothesis", "needs_review",
+            "tested", "confirmed", "rejected", "not_interesting",
+        }
+        if state not in allowed:
+            raise ValueError("invalid finding state")
+
+        program_row = self._program_row(program)
+        if not program_row:
+            return None
+
+        reviewed_at = _now() if state in {
+            "tested", "confirmed", "rejected", "not_interesting"
+        } else None
+
+        row = self.conn.execute(
+            """
+            SELECT * FROM findings
+            WHERE id = ? AND program_id = ?
+            """,
+            (finding_id, program_row["id"]),
+        ).fetchone()
+
+        if not row:
+            return None
+
+        self.conn.execute(
+            """
+            UPDATE findings
+            SET state = ?, operator_note = ?, reviewed_at = ?
+            WHERE id = ? AND program_id = ?
+            """,
+            (
+                state, operator_note.strip(), reviewed_at,
+                finding_id, program_row["id"],
+            ),
+        )
+        self.conn.commit()
+
+        updated = self.conn.execute(
+            "SELECT * FROM findings WHERE id = ?",
+            (finding_id,),
+        ).fetchone()
+        return {
+            **dict(updated),
+            "evidence": json.loads(updated["evidence_json"] or "[]"),
+        }
+
+    def finding_learning_context(
+        self,
+        program_id: int,
+        host: str,
+        limit: int = 80,
+    ) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT agent, host, category, target, title, statement,
+                   confidence, state, operator_note, last_seen_at
+            FROM findings
+            WHERE program_id = ? AND host = ?
+            ORDER BY last_seen_at DESC
+            LIMIT ?
+            """,
+            (program_id, host.lower(), max(1, min(limit, 200))),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def add_note(
         self,
         program: str,
@@ -379,9 +642,22 @@ class ProjectStore:
             (row["id"],),
         ).fetchall()
 
+        findings = self.conn.execute(
+            """
+            SELECT id, agent, host, category, target, title,
+                   confidence, state, operator_note, last_seen_at
+            FROM findings
+            WHERE program_id = ?
+            ORDER BY last_seen_at DESC
+            LIMIT 100
+            """,
+            (row["id"],),
+        ).fetchall()
+
         return {
             "program": dict(row),
             "sessions": [dict(item) for item in sessions],
             "hosts": [dict(item) for item in hosts],
             "notes": [dict(item) for item in notes],
+            "findings": [dict(item) for item in findings],
         }
