@@ -1,5 +1,3 @@
-from datetime import date
-
 from recon.project_store import ProjectStore
 from recon.project_traffic import ProgramTrafficStore
 
@@ -55,6 +53,34 @@ def test_program_traffic_isolated_between_programs(tmp_path):
 
         assert traffic.hosts(facebook["id"])[0]["host"] == "target.test"
         assert traffic.hosts(other["id"]) == []
+
+        finding_id = store.upsert_finding(
+            program_id=facebook["id"],
+            session_id=session["id"],
+            agent="parameter-agent",
+            host="target.test",
+            category="missed_review",
+            target="/api/users?user_id=10",
+            title="Review user_id relationship",
+            statement="user_id appears on a user resource",
+            evidence=["GET /api/users?user_id=10"],
+            confidence=0.52,
+        )
+        assert finding_id > 0
+        before = store.list_findings("Facebook", host="target.test")
+        assert before[0]["state"] == "needs_review"
+
+        updated = store.update_finding_state(
+            program="Facebook",
+            finding_id=finding_id,
+            state="not_interesting",
+            operator_note="Already checked manually.",
+        )
+        assert updated["state"] == "not_interesting"
+        assert updated["operator_note"] == "Already checked manually."
+
+        learned = store.finding_learning_context(facebook["id"], "target.test")
+        assert learned[0]["state"] == "not_interesting"
     finally:
         traffic.close()
         store.close()
