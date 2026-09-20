@@ -187,8 +187,7 @@ class ProjectStore:
             "started_at": created,
         }
         (folder / "session.json").write_text(
-            json.dumps(metadata, ensure_ascii=False, indent=2) + "
-",
+            json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
 
