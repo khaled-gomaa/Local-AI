@@ -16,6 +16,7 @@ from ai.rerank import rerank
 from recon.traffic import TrafficStore
 from recon.project_store import ProjectStore
 from recon.project_traffic import ProgramTrafficStore
+from recon.assessment_state import build_attention_queue, render_briefing
 from ai.recon_insight import build_prompt, parse_result, render_insight
 from ai.shadow_team import render_shadow_report, run_shadow_team
 
@@ -289,6 +290,29 @@ def _schedule_auto_insight(host: str) -> None:
     insight_executor.submit(worker)
 
 
+def build_program_handoff(program_row, session_row) -> dict:
+    pstore = ProjectStore()
+    traffic = ProgramTrafficStore()
+    try:
+        handoff = pstore.session_handoff(
+            int(program_row["id"]),
+            int(session_row["id"]),
+            traffic.program_summary(int(program_row["id"])),
+        )
+        findings = pstore.list_findings(
+            program_row["name"],
+            limit=100,
+        )
+        handoff["attention_queue"] = build_attention_queue(
+            findings=findings,
+            new_endpoints=handoff["delta"]["new_endpoints"],
+            new_hosts=handoff["delta"]["new_hosts"],
+        )
+        return handoff
+    finally:
+        traffic.close()
+        pstore.close()
+
 def _program_session(program: str):
     store = ProjectStore()
     program_row, session_row = store.get_or_create_active_session(program)
@@ -555,13 +579,63 @@ def project_start(program: str):
         return jsonify({"ok": False, "error": "invalid program name"}), 400
     store, program_row, session_row = _program_session(program)
     try:
+        handoff = build_program_handoff(program_row, session_row)
+        store.save_session_handoff(
+            int(session_row["id"]),
+            handoff,
+        )
         return jsonify({
             "ok": True,
             "program": dict(program_row),
             "session": dict(session_row),
             "context": store.program_context(program),
+            "handoff": handoff,
+            "briefing": render_briefing(handoff),
         })
     finally:
+        store.close()
+
+@app.get("/projects/<program>/briefing")
+def project_briefing(program: str):
+    store = ProjectStore()
+    try:
+        program_row, session_row = store.get_or_create_active_session(program)
+        handoff = build_program_handoff(program_row, session_row)
+        store.save_session_handoff(int(session_row["id"]), handoff)
+        return jsonify({
+            "ok": True,
+            "program": program_row["name"],
+            "session": dict(session_row),
+            "handoff": handoff,
+            "briefing": render_briefing(handoff),
+        })
+    finally:
+        store.close()
+
+@app.post("/projects/<program>/handoff")
+def project_handoff(program: str):
+    store = ProjectStore()
+    traffic = ProgramTrafficStore()
+    try:
+        program_row, session_row = store.get_or_create_active_session(program)
+        handoff = store.session_handoff(
+            int(program_row["id"]),
+            int(session_row["id"]),
+            traffic.program_summary(int(program_row["id"])),
+        )
+        handoff["attention_queue"] = build_attention_queue(
+            findings=store.list_findings(program, limit=100),
+            new_endpoints=handoff["delta"]["new_endpoints"],
+            new_hosts=handoff["delta"]["new_hosts"],
+        )
+        store.save_session_handoff(int(session_row["id"]), handoff)
+        return jsonify({
+            "ok": True,
+            "handoff": handoff,
+            "briefing": render_briefing(handoff),
+        })
+    finally:
+        traffic.close()
         store.close()
 
 @app.get("/projects/<program>/sessions")
