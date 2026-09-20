@@ -24,6 +24,10 @@ AGENTS = {
         "focus": "Review the entire accumulated program history. Look for things the operator may have missed, newly observed surfaces, stale assumptions, unexplored relationships, and differences between sessions.",
         "skill": "history-review",
     },
+    "gap-agent": {
+        "focus": "Identify coverage gaps: surfaces that appear to exist but have not been reviewed, incomplete workflows, sparse application areas, and unresolved operator questions.",
+        "skill": "coverage-gap-intelligence",
+    },
 }
 
 LEAD_PROMPT = """You are the Lead Recon Reviewer for an authorized manual security assessment.
