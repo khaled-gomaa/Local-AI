@@ -344,6 +344,8 @@ def _schedule_shadow_review(
                     retrieve=retrieve,
                     chat=ollama_chat,
                     save_finding=pstore.save_shadow_finding,
+                    record_findings=pstore.record_shadow_findings,
+                    learning_context=pstore.finding_learning_context(program_id, host),
                 )
                 log.info("shadow team review completed for %s/%s", program_id, host)
             finally:
@@ -604,6 +606,49 @@ def project_note(program: str):
     finally:
         store.close()
 
+@app.get("/projects/<program>/findings")
+def project_findings(program: str):
+    state = request.args.get("state")
+    host = request.args.get("host")
+    limit = request.args.get("limit", "200")
+    store = ProjectStore()
+    try:
+        findings = store.list_findings(
+            program=program,
+            host=host,
+            state=state,
+            limit=int(limit),
+        )
+        return jsonify({"ok": True, "program": program, "findings": findings})
+    except (ValueError, TypeError) as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    finally:
+        store.close()
+
+@app.patch("/projects/<program>/findings/<int:finding_id>")
+def update_project_finding(program: str, finding_id: int):
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"ok": False, "error": "JSON object required"}), 400
+
+    state = str(data.get("state") or "").strip()
+    note = str(data.get("operator_note") or "").strip()
+    store = ProjectStore()
+    try:
+        updated = store.update_finding_state(
+            program=program,
+            finding_id=finding_id,
+            state=state,
+            operator_note=note,
+        )
+        if updated is None:
+            return jsonify({"ok": False, "error": "finding not found"}), 404
+        return jsonify({"ok": True, "finding": updated})
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    finally:
+        store.close()
+
 @app.get("/projects/<program>/hosts")
 def project_hosts(program: str):
     store = ProjectStore()
@@ -705,6 +750,8 @@ def project_shadow_review(program: str, host: str):
             retrieve=retrieve,
             chat=ollama_chat,
             save_finding=store.save_shadow_finding,
+            record_findings=store.record_shadow_findings,
+            learning_context=store.finding_learning_context(int(program_row["id"]), host),
         )
         return jsonify({"ok": True, **result})
     except Exception as exc:
