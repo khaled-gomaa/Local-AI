@@ -609,15 +609,24 @@ class ProjectStore:
         return [dict(row) for row in rows]
 
     def previous_session(self, program_id: int, session_id: int) -> sqlite3.Row | None:
+        current = self.conn.execute(
+            "SELECT session_date FROM sessions WHERE id = ? AND program_id = ?",
+            (session_id, program_id),
+        ).fetchone()
+        if not current:
+            return None
+
         return self.conn.execute(
             """
             SELECT *
             FROM sessions
-            WHERE program_id = ? AND id != ?
+            WHERE program_id = ?
+              AND id != ?
+              AND session_date < ?
             ORDER BY session_date DESC, id DESC
             LIMIT 1
             """,
-            (program_id, session_id),
+            (program_id, session_id, current["session_date"]),
         ).fetchone()
 
     def session_stats(self, program_id: int, session_id: int) -> dict:
