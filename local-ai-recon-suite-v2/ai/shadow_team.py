@@ -209,11 +209,14 @@ def render_shadow_report(result: dict) -> str:
     if missed:
         lines += ["", "YOU MAY HAVE MISSED"]
         for item in missed[:15]:
-            lines.append(f"- {item.get("item", "Unknown")}: {item.get("why_it_matters", "")}")
+            item_name = item.get("item", "Unknown")
+            why = item.get("why_it_matters", "")
+            lines.append(f"- {item_name}: {why}")
             evidence = "; ".join(item.get("evidence") or [])
             if evidence:
                 lines.append(f"  Evidence: {evidence}")
-            lines.append(f"  Next manual check: {item.get("next_manual_check", "")}")
+            next_check = item.get("next_manual_check", "")
+            lines.append(f"  Next manual check: {next_check}")
 
     correlations = lead.get("cross_agent_correlations") or []
     if correlations:
@@ -226,7 +229,9 @@ def render_shadow_report(result: dict) -> str:
     if queue:
         lines += ["", "PRIORITY REVIEW QUEUE"]
         for item in queue[:15]:
-            lines.append(f"- {item.get("target")}: {item.get("reason", "")}")
+            target = item.get("target", "")
+            reason = item.get("reason", "")
+            lines.append(f"- {target}: {reason}")
             evidence = "; ".join(item.get("evidence") or [])
             if evidence:
                 lines.append(f"  Evidence: {evidence}")
@@ -243,6 +248,8 @@ def render_shadow_report(result: dict) -> str:
 
     lines += ["", "SPECIALIST REVIEWS"]
     for specialist in result.get("specialists") or []:
-        lines.append(f"[{specialist.get("agent", "agent")}] {specialist.get("summary", "")}")
+        agent_name = specialist.get("agent", "agent")
+        summary = specialist.get("summary", "")
+        lines.append(f"[{agent_name}] {summary}")
 
     return "\n".join(lines).strip()
