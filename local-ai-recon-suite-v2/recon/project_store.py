@@ -326,6 +326,24 @@ class ProjectStore:
                 encoding="utf-8",
             )
 
+    def shadow_agent_names(
+        self,
+        program_id: int,
+        host: str | None = None,
+    ) -> list[str]:
+        params: list = [program_id]
+        sql = """
+            SELECT DISTINCT agent
+            FROM shadow_findings
+            WHERE program_id = ?
+        """
+        if host:
+            sql += " AND host = ?"
+            params.append(host.lower())
+        sql += " ORDER BY agent"
+        rows = self.conn.execute(sql, params).fetchall()
+        return [str(row["agent"]) for row in rows]
+
     def shadow_context(
         self,
         program_id: int,
