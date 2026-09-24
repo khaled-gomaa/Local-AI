@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from threading import Lock
+from threading import Condition, Lock
 from concurrent.futures import ThreadPoolExecutor
 from typing import Final
 
@@ -51,6 +51,37 @@ insight_lock = Lock()
 insight_running: set[str] = set()
 shadow_running: set[str] = set()
 shadow_last_count: dict[str, int] = {}
+
+class _ChatGate:
+    """Serialize local LLM generation and prioritize foreground/manual requests."""
+    def __init__(self):
+        self._condition = Condition()
+        self._busy = False
+        self._manual_waiters = 0
+
+    def acquire(self, background: bool = False) -> None:
+        with self._condition:
+            if background:
+                while self._busy or self._manual_waiters:
+                    self._condition.wait()
+                self._busy = True
+                return
+
+            self._manual_waiters += 1
+            try:
+                while self._busy:
+                    self._condition.wait()
+            finally:
+                self._manual_waiters -= 1
+            self._busy = True
+
+    def release(self) -> None:
+        with self._condition:
+            self._busy = False
+            self._condition.notify_all()
+
+chat_gate = _ChatGate()
+
 AUTO_INSIGHT_EVERY: Final = int(os.getenv("AUTO_INSIGHT_EVERY", "8"))
 AUTO_SHADOW_EVERY: Final = int(os.getenv("AUTO_SHADOW_EVERY", "12"))
 
@@ -134,7 +165,13 @@ def embed(text: str) -> list[float]:
         raise RuntimeError("Ollama returned no embeddings")
     return embeddings[0]
 
-def ollama_chat(system: str, user: str) -> str:
+def ollama_chat(
+    system: str,
+    user: str,
+    *,
+    background: bool = False,
+) -> str:
+    chat_gate.acquire(background=background)
     try:
         response = requests.post(
             f"{OLLAMA}/api/chat",
@@ -152,17 +189,19 @@ def ollama_chat(system: str, user: str) -> str:
         log.error("chat transport error: %s", exc)
         raise RuntimeError(f"Cannot reach Ollama at {OLLAMA}") from exc
 
-    if not response.ok:
-        raise RuntimeError(
-            f"Ollama chat failed [{response.status_code}]: {response.text[:300]}"
-        )
+        if not response.ok:
+            raise RuntimeError(
+                f"Ollama chat failed [{response.status_code}]: {response.text[:300]}"
+            )
 
-    payload = response.json()
-    message = payload.get("message") or {}
-    content = message.get("content")
-    if not isinstance(content, str):
-        raise RuntimeError("Ollama returned an invalid chat response")
-    return content
+        payload = response.json()
+        message = payload.get("message") or {}
+        content = message.get("content")
+        if not isinstance(content, str):
+            raise RuntimeError("Ollama returned an invalid chat response")
+        return content
+    finally:
+        chat_gate.release()
 
 def _collections_for(agent: str, query: str) -> list[str]:
     names = ["recon", "tooling_development", "web_security"]
@@ -219,7 +258,7 @@ def retrieve(query: str, agent: str, k: int = 6) -> list[dict]:
 
     return rerank(query, hits, top_k=k)
 
-def generate_recon_insight(host: str) -> dict:
+def generate_recon_insight(host: str, *, background: bool = False) -> dict:
     store = TrafficStore()
     try:
         snapshot = store.snapshot(host)
@@ -248,7 +287,7 @@ def generate_recon_insight(host: str) -> dict:
 
         previous = store.latest_insight(host)
         system, user = build_prompt(snapshot, evidence, previous)
-        raw = ollama_chat(system, user)
+        raw = ollama_chat(system, user, background=background)
         result = parse_result(raw)
         result["host"] = host.lower()
         result["knowledge_sources"] = [
@@ -279,7 +318,7 @@ def _schedule_auto_insight(host: str) -> None:
 
     def worker():
         try:
-            generate_recon_insight(host)
+            generate_recon_insight(host, background=True)
             log.info("auto recon insight generated for %s", host)
         except Exception as exc:
             log.warning("auto recon insight failed for %s: %s", host, exc)
@@ -368,7 +407,11 @@ def _schedule_shadow_review(
                     program_context=context,
                     previous_findings=previous_findings,
                     retrieve=retrieve,
-                    chat=ollama_chat,
+                    chat=lambda system, user: ollama_chat(
+                        system,
+                        user,
+                        background=True,
+                    ),
                     save_finding=pstore.save_shadow_finding,
                     record_findings=pstore.record_shadow_findings,
                     learning_context=pstore.finding_learning_context(program_id, host),
