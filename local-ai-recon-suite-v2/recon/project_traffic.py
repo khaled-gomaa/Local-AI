@@ -476,6 +476,53 @@ class ProgramTrafficStore:
         ).fetchone()
         return row is not None
 
+    def host_summary(self, program_id: int, host: str) -> dict:
+        host = host.lower()
+        counts = self.conn.execute(
+            """
+            SELECT COUNT(*) AS requests,
+                   COUNT(DISTINCT path) AS pages
+            FROM program_requests
+            WHERE program_id = ? AND host = ?
+            """,
+            (program_id, host),
+        ).fetchone()
+        relationship_count = self.conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM program_edges
+            WHERE program_id = ? AND host = ?
+            """,
+            (program_id, host),
+        ).fetchone()["n"]
+        candidates = self.conn.execute(
+            """
+            SELECT vuln_class, url, param, confidence, reason, evidence_json
+            FROM program_candidates
+            WHERE program_id = ? AND host = ? AND state = 'open'
+            ORDER BY confidence DESC, last_seen DESC
+            LIMIT 10
+            """,
+            (program_id, host),
+        ).fetchall()
+
+        return {
+            "requests": int(counts["requests"] or 0),
+            "pages": int(counts["pages"] or 0),
+            "relationships": int(relationship_count or 0),
+            "candidates": [
+                {
+                    "class": row["vuln_class"],
+                    "url": row["url"],
+                    "param": row["param"],
+                    "confidence": float(row["confidence"]),
+                    "reason": row["reason"],
+                    "evidence": json.loads(row["evidence_json"] or "[]"),
+                }
+                for row in candidates
+            ],
+        }
+
     def hosts(self, program_id: int) -> list[dict]:
         rows = self.conn.execute(
             """
