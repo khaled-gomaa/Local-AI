@@ -5,11 +5,10 @@ VERSION="${GRADLE_VERSION:-8.8}"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/local-ai-recon/gradle-$VERSION"
 DIST="$CACHE/gradle-$VERSION"
 
-if command -v gradle >/dev/null 2>&1; then
-  exec gradle "$@"
-fi
-
+# Always use the project-pinned Gradle distribution. This avoids older
+# system Gradle versions silently ignoring Kotlin DSL build/settings files.
 mkdir -p "$CACHE"
+cd "$BASE"
 if [ ! -x "$DIST/bin/gradle" ]; then
   ARCHIVE="$CACHE/gradle-$VERSION-bin.zip"
   URL="https://services.gradle.org/distributions/gradle-$VERSION-bin.zip"
