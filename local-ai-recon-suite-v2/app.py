@@ -551,7 +551,7 @@ def burp_event():
         )
         pstore.touch_host(int(program_row["id"]), host)
 
-        snapshot = traffic.snapshot(int(program_row["id"]), host)
+        summary = traffic.host_summary(int(program_row["id"]), host)
         _schedule_shadow_review(
             int(program_row["id"]),
             int(session_row["id"]),
@@ -566,9 +566,9 @@ def burp_event():
             "session_date": session_row["session_date"],
             "session_folder": session_row["folder"],
             "host": host,
-            "pages": len(snapshot["pages"]),
-            "relationships": len(snapshot["relationships"]),
-            "candidates": snapshot["candidates"][:10],
+            "pages": summary["pages"],
+            "relationships": summary["relationships"],
+            "candidates": summary["candidates"],
             "shadow_agents": sorted({item["agent"] for item in shadow}),
         })
     except Exception as exc:
