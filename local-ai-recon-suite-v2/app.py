@@ -173,21 +173,22 @@ def ollama_chat(
 ) -> str:
     chat_gate.acquire(background=background)
     try:
-        response = requests.post(
-            f"{OLLAMA}/api/chat",
-            json={
-                "model": CHAT_MODEL,
-                "stream": False,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-            },
-            timeout=180,
-        )
-    except requests.RequestException as exc:
-        log.error("chat transport error: %s", exc)
-        raise RuntimeError(f"Cannot reach Ollama at {OLLAMA}") from exc
+        try:
+            response = requests.post(
+                f"{OLLAMA}/api/chat",
+                json={
+                    "model": CHAT_MODEL,
+                    "stream": False,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                },
+                timeout=180,
+            )
+        except requests.RequestException as exc:
+            log.error("chat transport error: %s", exc)
+            raise RuntimeError(f"Cannot reach Ollama at {OLLAMA}") from exc
 
         if not response.ok:
             raise RuntimeError(
