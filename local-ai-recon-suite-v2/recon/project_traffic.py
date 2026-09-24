@@ -212,36 +212,6 @@ class ProgramTrafficStore:
                 now,
             )
 
-        rows = self.conn.execute(
-            """
-            SELECT url, params_json
-            FROM program_requests
-            WHERE program_id = ? AND host = ?
-            """,
-            (program_id, host),
-        ).fetchall()
-
-        parameter_endpoints: dict[str, set[str]] = {}
-        for row in rows:
-            for param in json.loads(row["params_json"] or "[]"):
-                parameter_endpoints.setdefault(str(param), set()).add(row["url"])
-
-        for param, endpoints in parameter_endpoints.items():
-            if len(endpoints) < 2 or param.lower() in SENSITIVE_NAMES:
-                continue
-            ordered = sorted(endpoints)
-            anchor = ordered[0]
-            for target in ordered[1:]:
-                self._edge(
-                    program_id,
-                    host,
-                    anchor,
-                    target,
-                    "shared_parameter",
-                    param,
-                    now,
-                )
-
         for signal in signals:
             self.conn.execute(
                 """
@@ -389,6 +359,44 @@ class ProgramTrafficStore:
             if parts:
                 resource_groups.setdefault("/" + parts[0], []).append(item["path"])
 
+        relationships = [dict(row) for row in edges]
+
+        # Shared-parameter relationships are derived from the already loaded
+        # snapshot instead of rescanning the whole request table on every event.
+        parameter_endpoints: dict[str, set[str]] = {}
+        for row in rows:
+            for param in json.loads(row["params_json"] or "[]"):
+                if str(param).lower() in SENSITIVE_NAMES:
+                    continue
+                parameter_endpoints.setdefault(str(param), set()).add(row["url"])
+
+        existing_shared = {
+            (
+                item["source_url"],
+                item["target_url"],
+                item["relation"],
+            )
+            for item in relationships
+            if item.get("relation") == "shared_parameter"
+        }
+        for param, endpoints in parameter_endpoints.items():
+            if len(endpoints) < 2:
+                continue
+            ordered = sorted(endpoints)
+            anchor = _endpoint_path(ordered[0])
+            for target in ordered[1:]:
+                target_path = _endpoint_path(target)
+                key = (anchor, target_path, "shared_parameter")
+                if key in existing_shared:
+                    continue
+                relationships.append({
+                    "source_url": anchor,
+                    "target_url": target_path,
+                    "relation": "shared_parameter",
+                    "evidence": param,
+                })
+                existing_shared.add(key)
+
         return {
             "program_id": program_id,
             "host": host,
@@ -400,7 +408,7 @@ class ProgramTrafficStore:
                 key: sorted(set(values))
                 for key, values in sorted(resource_groups.items())
             },
-            "relationships": [dict(row) for row in edges],
+            "relationships": relationships,
             "candidates": [
                 {
                     "class": row["vuln_class"],
@@ -455,6 +463,18 @@ class ProgramTrafficStore:
             (program_id, host.lower()),
         ).fetchone()
         return int(row["n"])
+
+    def has_open_candidates(self, program_id: int, host: str) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT 1
+            FROM program_candidates
+            WHERE program_id = ? AND host = ? AND state = 'open'
+            LIMIT 1
+            """,
+            (program_id, host.lower()),
+        ).fetchone()
+        return row is not None
 
     def hosts(self, program_id: int) -> list[dict]:
         rows = self.conn.execute(
