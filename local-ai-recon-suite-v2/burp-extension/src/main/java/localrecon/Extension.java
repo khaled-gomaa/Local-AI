@@ -77,7 +77,7 @@ public class Extension implements BurpExtension {
         JPanel root = buildUi();
         api.userInterface().registerSuiteTab("Recon AI", root);
 
-        Timer timer = new Timer(5000, e -> refreshHosts());
+        Timer timer = new Timer(15000, e -> refreshHosts());
         timer.setRepeats(true);
         timer.start();
 
