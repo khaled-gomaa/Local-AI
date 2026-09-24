@@ -1,7 +1,7 @@
 package localrecon;
 
 import burp.api.montoya.BurpExtension;
-import burp.api.montoya.ContextMenuItemsProvider;
+import burp.api.montoya.ui.contextmenu.ContextMenuItemsProvider;
 import burp.api.montoya.MontoyaApi;
 import burp.api.montoya.http.handler.HttpHandler;
 import burp.api.montoya.http.handler.HttpRequestToBeSent;
@@ -229,7 +229,8 @@ public class Extension implements BurpExtension {
                     "/projects/" + pathPart(program)
                             + "/shadow/" + pathPart(host) + "/review",
                     "{}",
-                    false
+                    false,
+                    null
             );
         });
 
