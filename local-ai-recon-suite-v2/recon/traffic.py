@@ -257,7 +257,12 @@ def _security_signals(request_url: str, request_headers: str, response_headers: 
         if low in SENSITIVE_NAMES:
             continue
         # Passive reflection signal only; values are not persisted.
-        token_pattern = re.compile(rf"(?:[?&]{re.escape(param)}=|(?:^|[\s\"']){re.escape(param)}[=:])([^&#\s,}\"']+)", re.I)
+        token_pattern = re.compile(
+            r"(?:[?&]" + re.escape(param) +
+            r"=|(?:^|[\s\"'])" + re.escape(param) +
+            r"[=:])([^&#\s,}\"']+)",
+            re.I,
+        )
         match = token_pattern.search(request_url + "\n" + request_headers)
         if match:
             value = match.group(1)
