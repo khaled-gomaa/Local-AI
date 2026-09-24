@@ -327,10 +327,11 @@ def _schedule_shadow_review(
     traffic = ProgramTrafficStore()
     pstore = ProjectStore()
     try:
+        # Keep the hot Burp ingestion path cheap: only run indexed count checks here.
+        # The expensive snapshot/context loading happens inside the background worker.
         count = traffic.request_count(program_id, host)
-        snapshot = traffic.snapshot(program_id, host)
+        has_signal = traffic.has_open_candidates(program_id, host)
         previous_findings = pstore.shadow_context(program_id, host)
-        has_signal = bool(snapshot.get("candidates"))
     finally:
         traffic.close()
         pstore.close()
@@ -391,7 +392,7 @@ def _schedule_shadow_review(
                 traffic.close()
                 pstore.close()
         except Exception as exc:
-            log.exception("shadow team failed for %s: %s", key, exc)
+            log.exception("shadow team failed for %s/%s", key, host)
         finally:
             with insight_lock:
                 shadow_running.discard(key)
