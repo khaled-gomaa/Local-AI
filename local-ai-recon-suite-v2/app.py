@@ -557,7 +557,7 @@ def burp_event():
             int(session_row["id"]),
             host,
         )
-        shadow = pstore.shadow_context(int(program_row["id"]), host)
+        shadow_agents = pstore.shadow_agent_names(int(program_row["id"]), host)
         return jsonify({
             "ok": True,
             "program": program_row["name"],
@@ -569,7 +569,7 @@ def burp_event():
             "pages": summary["pages"],
             "relationships": summary["relationships"],
             "candidates": summary["candidates"],
-            "shadow_agents": sorted({item["agent"] for item in shadow}),
+            "shadow_agents": shadow_agents,
         })
     except Exception as exc:
         log.exception("burp event ingestion failed")
