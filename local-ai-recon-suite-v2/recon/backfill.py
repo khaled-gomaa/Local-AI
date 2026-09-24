@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -32,6 +33,7 @@ MAX_DOCS = int(os.getenv("RECON_BACKFILL_MAX_DOCS", "10000"))
 MAX_PAGES = int(os.getenv("RECON_BACKFILL_MAX_PAGES", "200"))
 H1_MAX_PAGES = int(os.getenv("H1_MAX_PAGES", "100"))
 H1_PAGE_SIZE = min(int(os.getenv("H1_PAGE_SIZE", "100")), 100)
+BACKFILL_WORKERS = max(1, int(os.getenv("RECON_BACKFILL_WORKERS", "6")))
 
 _BLOCK = (
     "/legal", "/privacy", "/terms", "/cookie", "/careers", "/jobs",
@@ -50,6 +52,54 @@ def _useful_url(url: str) -> bool:
         return False
     return any(hint in low for hint in _HINTS)
 
+def _fetch_item(item: tuple) -> tuple[tuple, str | None]:
+    """
+    Fetch/extract content concurrently. Database and append-only file writes remain
+    on the caller thread so SQLite/JSONL state stays serialized and deterministic.
+    """
+    try:
+        text = extract(item[1])
+        if DELAY > 0:
+            time.sleep(DELAY)
+        return item, text
+    except Exception as exc:
+        print(f"[!] fetch failed: {item[1]}: {exc}")
+        return item, None
+
+
+def ingest_batch(
+    store: ReconStore,
+    items: list[tuple],
+) -> dict[str, int]:
+    stats = {k: 0 for k in ("seen", "added", "updated", "unchanged", "failed")}
+    if not items:
+        return stats
+
+    with ThreadPoolExecutor(
+        max_workers=BACKFILL_WORKERS,
+        thread_name_prefix="backfill-fetch",
+    ) as pool:
+        fetched = pool.map(_fetch_item, items)
+
+        for item, text in fetched:
+            title, url, source, published, summary, extra = item
+            stats["seen"] += 1
+            outcome = ingest(
+                store,
+                title,
+                url,
+                source,
+                published,
+                summary,
+                extra,
+                text=text,
+            )
+            if outcome in stats:
+                stats[outcome] += 1
+
+    return stats
+
+
 def ingest(
     store: ReconStore,
     title: str,
@@ -58,6 +108,7 @@ def ingest(
     published: str | None = None,
     summary: str = "",
     extra: dict | None = None,
+    text: str | None = None,
 ) -> str:
     url = canonical(url)
     if not url:
@@ -73,8 +124,10 @@ def ingest(
         if quick_cat == "ignore" and quick_score < 0:
             return "ignored"
 
-    text = extract(url)
-    time.sleep(DELAY)
+    if text is None:
+        text = extract(url)
+        if DELAY > 0:
+            time.sleep(DELAY)
     if not text:
         return "failed"
 
@@ -120,6 +173,8 @@ def sync_rss(store: ReconStore) -> dict[str, int]:
             response.raise_for_status()
             feed = feedparser.parse(response.content)
             print(f"[*] RSS {source}: {len(feed.entries)} entries visible")
+
+            items = []
             for entry in feed.entries:
                 url = entry.get("link", "")
                 if not url:
@@ -127,10 +182,10 @@ def sync_rss(store: ReconStore) -> dict[str, int]:
                 title = clean(entry.get("title", ""))
                 summary = clean(entry.get("summary", ""))
                 published = entry.get("published", entry.get("updated", ""))
-                stats["seen"] += 1
-                outcome = ingest(store, title, url, source, published, summary)
-                if outcome in stats:
-                    stats[outcome] += 1
+                items.append((title, url, source, published, summary, None))
+
+            part = ingest_batch(store, items)
+            _merge_stats(stats, part)
         except Exception as exc:
             print(f"[!] RSS failed {source}: {exc}")
             stats["failed"] += 1
@@ -198,6 +253,7 @@ def sync_sitemaps(store: ReconStore) -> dict[str, int]:
             urls = sitemap_urls(sitemap)
             print(f"[*] sitemap {sitemap}: {len(urls)} URLs")
             matched = 0
+            items = []
 
             for url in urls:
                 if not _useful_url(url):
@@ -209,14 +265,15 @@ def sync_sitemaps(store: ReconStore) -> dict[str, int]:
                     .replace("-", " ")
                     .replace("_", " ")
                 )
-                stats["seen"] += 1
-                outcome = ingest(store, title, url, "Sitemap archive")
-                if outcome in stats:
-                    stats[outcome] += 1
-                if store.count_documents() >= MAX_DOCS:
+                items.append((title, url, "Sitemap archive", None, "", None))
+                if len(items) >= max(1, MAX_DOCS - store.count_documents()):
                     break
 
             print(f"[*]   → {matched} passed URL filter")
+            part = ingest_batch(store, items)
+            _merge_stats(stats, part)
+            if store.count_documents() >= MAX_DOCS:
+                break
     return stats
 
 def sync_html_indexes(store: ReconStore) -> dict[str, int]:
@@ -231,6 +288,7 @@ def sync_html_indexes(store: ReconStore) -> dict[str, int]:
                 parsed = urlparse(response.url)
                 base = f"{parsed.scheme}://{parsed.netloc}"
                 seen: set[str] = set()
+                items = []
 
                 for anchor_tag in soup.find_all("a", href=True):
                     href = canonical(urljoin(base, anchor_tag["href"]))
@@ -248,12 +306,14 @@ def sync_html_indexes(store: ReconStore) -> dict[str, int]:
                     if not anchor:
                         continue
 
-                    stats["seen"] += 1
-                    outcome = ingest(store, anchor, href, source)
-                    if outcome in stats:
-                        stats[outcome] += 1
-                    if store.count_documents() >= MAX_DOCS:
+                    items.append((anchor, href, source, None, "", None))
+                    if len(items) >= max(1, MAX_DOCS - store.count_documents()):
                         break
+
+                part = ingest_batch(store, items)
+                _merge_stats(stats, part)
+                if store.count_documents() >= MAX_DOCS:
+                    return stats
             except Exception as exc:
                 print(f"[!] index failed {source} {index_url}: {exc}")
                 stats["failed"] += 1
@@ -303,6 +363,7 @@ def sync_hackerone(store: ReconStore) -> dict[str, int]:
 
         print(f"[*] HackerOne Hacktivity page {page}: {len(data)} reports")
 
+        items = []
         for item in data:
             attrs = item.get("attributes", {})
             title = attrs.get("title", "")
@@ -331,18 +392,17 @@ def sync_hackerone(store: ReconStore) -> dict[str, int]:
             summary = attrs.get("vulnerability_information") or (
                 f"{title} {program or ''} {attrs.get('cwe') or ''}"
             )
-            stats["seen"] += 1
-            outcome = ingest(
-                store,
+            items.append((
                 title,
                 url,
                 "HackerOne Hacktivity",
                 attrs.get("disclosed_at"),
                 summary,
                 extra,
-            )
-            if outcome in stats:
-                stats[outcome] += 1
+            ))
+
+        part = ingest_batch(store, items)
+        _merge_stats(stats, part)
 
         if len(data) < H1_PAGE_SIZE:
             break
