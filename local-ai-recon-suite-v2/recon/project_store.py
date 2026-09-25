@@ -131,14 +131,20 @@ class ProjectStore:
     def __init__(self, path: Path = DB_PATH):
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path)
+        self.conn = sqlite3.connect(self.path, timeout=30.0)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=NORMAL")
+        self.conn.execute("PRAGMA busy_timeout=30000")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
         self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
+
+    def get_program(self, program: str) -> sqlite3.Row | None:
+        return self._program_row(program)
 
     def _program_row(self, program: str):
         slug = slugify(program)
