@@ -92,6 +92,11 @@ class _ChatGate:
                 self._manual_waiters -= 1
             self._busy = True
 
+    @property
+    def busy(self) -> bool:
+        with self._condition:
+            return self._busy
+
     def release(self) -> None:
         with self._condition:
             self._busy = False
@@ -369,6 +374,12 @@ def _schedule_auto_insight(host: str) -> None:
         insight_running.add(host)
 
     def worker():
+        log.info(
+            "shadow team worker started program=%s session=%s host=%s",
+            program_id,
+            session_id,
+            host,
+        )
         try:
             generate_recon_insight(host, background=True)
             log.info("auto recon insight generated for %s", host)
@@ -434,10 +445,24 @@ def _schedule_shadow_review(
         return
 
     with insight_lock:
-        if key in shadow_running:
+        # Ollama generation is intentionally serialized. Do not build a FIFO
+        # of automatic reviews during Burp history bootstrap; one background
+        # review is enough to keep the operator informed without starving
+        # manual analysis.
+        if key in shadow_running or shadow_running:
             return
         shadow_running.add(key)
         shadow_last_count[key] = count
+
+    log.info(
+        "shadow review scheduled program=%s session=%s host=%s requests=%d candidates=%s previous_findings=%d",
+        program_id,
+        session_id,
+        host,
+        count,
+        has_signal,
+        len(previous_findings),
+    )
 
     def worker():
         try:
@@ -530,7 +555,17 @@ def health():
 
 @app.get("/status")
 def status():
-    return jsonify(_health_status())
+    payload = _health_status()
+    with insight_lock:
+        payload["shadow_reviews"] = {
+            "running": sorted(shadow_running),
+            "count": len(shadow_running),
+        }
+    payload["llm"] = {
+        "chat_gate_busy": chat_gate.busy,
+        "chat_model": CHAT_MODEL,
+    }
+    return jsonify(payload)
 
 @app.post("/reload")
 def reload_collections():
@@ -945,6 +980,17 @@ def project_shadow_review(program: str, host: str):
     store, program_row, session_row = _program_session(program)
     traffic = ProgramTrafficStore()
     try:
+        with insight_lock:
+            active_reviews = sorted(shadow_running)
+        if active_reviews:
+            return jsonify({
+                "ok": False,
+                "status": "background_review_running",
+                "error": "A background Shadow Team review is already using the local LLM.",
+                "active_reviews": active_reviews,
+                "retry": "Retry this manual review after the background review completes.",
+            }), 409
+
         snapshot = traffic.snapshot(int(program_row["id"]), host)
         if not snapshot["pages"]:
             return jsonify({"ok": False, "error": "no observed traffic"}), 404
