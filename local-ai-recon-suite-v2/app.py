@@ -374,12 +374,6 @@ def _schedule_auto_insight(host: str) -> None:
         insight_running.add(host)
 
     def worker():
-        log.info(
-            "shadow team worker started program=%s session=%s host=%s",
-            program_id,
-            session_id,
-            host,
-        )
         try:
             generate_recon_insight(host, background=True)
             log.info("auto recon insight generated for %s", host)
@@ -465,6 +459,12 @@ def _schedule_shadow_review(
     )
 
     def worker():
+        log.info(
+            "shadow team worker started program=%s session=%s host=%s",
+            program_id,
+            session_id,
+            host,
+        )
         try:
             pstore = ProjectStore()
             traffic = ProgramTrafficStore()
