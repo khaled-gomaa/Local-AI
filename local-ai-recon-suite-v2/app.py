@@ -65,7 +65,11 @@ class _ChatGate:
         self._busy = False
         self._manual_waiters = 0
 
-    def acquire(self, background: bool = False) -> None:
+    def acquire(
+        self,
+        background: bool = False,
+        wait_timeout: float = 5.0,
+    ) -> None:
         with self._condition:
             if background:
                 while self._busy or self._manual_waiters:
@@ -73,10 +77,17 @@ class _ChatGate:
                 self._busy = True
                 return
 
+            deadline = time.monotonic() + wait_timeout
             self._manual_waiters += 1
             try:
                 while self._busy:
-                    self._condition.wait()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise RuntimeError(
+                            "Local LLM is busy with a background analysis. "
+                            "Retry the manual analysis in a few seconds."
+                        )
+                    self._condition.wait(timeout=remaining)
             finally:
                 self._manual_waiters -= 1
             self._busy = True
@@ -179,7 +190,10 @@ def ollama_chat(
     timeout: int | None = None,
     num_predict: int | None = None,
 ) -> str:
-    chat_gate.acquire(background=background)
+    chat_gate.acquire(
+        background=background,
+        wait_timeout=5.0 if not background else 0.0,
+    )
     try:
         payload = {
             "model": CHAT_MODEL,
