@@ -284,8 +284,11 @@ class TrafficStore:
     def _conn(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
         if conn is None:
-            conn = sqlite3.connect(self.path)
+            conn = sqlite3.connect(self.path, timeout=30.0)
             conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA busy_timeout=30000")
             conn.executescript(SCHEMA)
             conn.commit()
             self._local.conn = conn
