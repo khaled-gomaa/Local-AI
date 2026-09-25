@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from threading import Condition, Lock
 from concurrent.futures import ThreadPoolExecutor
 from typing import Final
@@ -33,6 +34,11 @@ CHROMA_PATH: Final = os.getenv("CHROMA_PATH", "data/chroma")
 
 MAX_BODY_BYTES: Final = int(os.getenv("MAX_BODY_BYTES", str(2 * 1024 * 1024)))
 MAX_QUERY_CHARS: Final = int(os.getenv("MAX_QUERY_CHARS", "20000"))
+BURP_ANALYZE_MAX_CHARS: Final = int(os.getenv("BURP_ANALYZE_MAX_CHARS", "8000"))
+BURP_ANALYZE_OUTPUT_TOKENS: Final = int(os.getenv("BURP_ANALYZE_OUTPUT_TOKENS", "384"))
+BURP_ANALYZE_TIMEOUT: Final = int(os.getenv("BURP_ANALYZE_TIMEOUT", "75"))
+OLLAMA_CHAT_TIMEOUT: Final = int(os.getenv("OLLAMA_CHAT_TIMEOUT", "180"))
+OLLAMA_KEEP_ALIVE: Final = os.getenv("OLLAMA_KEEP_ALIVE", "10m")
 RETRIEVAL_CANDIDATES: Final = int(os.getenv("RETRIEVAL_CANDIDATES", "24"))
 
 COLLECTION_NAMES: Final = (
@@ -170,24 +176,44 @@ def ollama_chat(
     user: str,
     *,
     background: bool = False,
+    timeout: int | None = None,
+    num_predict: int | None = None,
 ) -> str:
     chat_gate.acquire(background=background)
     try:
+        payload = {
+            "model": CHAT_MODEL,
+            "stream": False,
+            "keep_alive": OLLAMA_KEEP_ALIVE,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        }
+        if num_predict is None:
+            num_predict = 512 if background else BURP_ANALYZE_OUTPUT_TOKENS
+        payload["options"] = {
+            "num_predict": max(64, int(num_predict)),
+            "temperature": 0.1,
+        }
+
+        request_timeout = timeout or (
+            OLLAMA_CHAT_TIMEOUT if background else BURP_ANALYZE_TIMEOUT
+        )
+        started = time.monotonic()
+
         try:
             response = requests.post(
                 f"{OLLAMA}/api/chat",
-                json={
-                    "model": CHAT_MODEL,
-                    "stream": False,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                },
-                timeout=180,
+                json=payload,
+                timeout=request_timeout,
             )
         except requests.RequestException as exc:
-            log.error("chat transport error: %s", exc)
+            log.error(
+                "chat transport error after %.1fs: %s",
+                time.monotonic() - started,
+                exc,
+            )
             raise RuntimeError(f"Cannot reach Ollama at {OLLAMA}") from exc
 
         if not response.ok:
@@ -195,8 +221,19 @@ def ollama_chat(
                 f"Ollama chat failed [{response.status_code}]: {response.text[:300]}"
             )
 
-        payload = response.json()
-        message = payload.get("message") or {}
+        result = response.json()
+        log.info(
+            "ollama chat completed model=%s background=%s total=%.2fs "
+            "load=%.2fs prompt_eval=%.2fs eval=%.2fs eval_tokens=%s",
+            CHAT_MODEL,
+            background,
+            float(result.get("total_duration", 0)) / 1e9,
+            float(result.get("load_duration", 0)) / 1e9,
+            float(result.get("prompt_eval_duration", 0)) / 1e9,
+            float(result.get("eval_duration", 0)) / 1e9,
+            result.get("eval_count"),
+        )
+        message = result.get("message") or {}
         content = message.get("content")
         if not isinstance(content, str):
             raise RuntimeError("Ollama returned an invalid chat response")
@@ -505,12 +542,21 @@ def burp_analyze():
         log.warning("truncating oversized request: %d chars", len(raw_input))
         raw_input = raw_input[:MAX_QUERY_CHARS]
 
+    if len(raw_input) > BURP_ANALYZE_MAX_CHARS:
+        log.info(
+            "truncating burp analysis input from %d to %d chars",
+            len(raw_input),
+            BURP_ANALYZE_MAX_CHARS,
+        )
+        raw_input = raw_input[:BURP_ANALYZE_MAX_CHARS]
+
     raw = redact(raw_input)
     routing = plan(raw)
-    evidence = retrieve(raw, routing["agent"], k=8)
+    evidence = retrieve(raw, routing["agent"], k=4)
 
     source_block = "\n\n".join(
-        f"[Source {i+1}] {x['title']} | {x['source']} | {x['url']}\n{x['text']}"
+        f"[Source {i+1}] {x['title']} | {x['source']} | {x['url']}\n"
+        f"{(x['text'] or '')[:1200]}"
         for i, x in enumerate(evidence)
     )
 
@@ -529,7 +575,13 @@ def burp_analyze():
     )
 
     try:
-        answer = ollama_chat(system, user)
+        answer = ollama_chat(
+            system,
+            user,
+            background=False,
+            timeout=BURP_ANALYZE_TIMEOUT,
+            num_predict=BURP_ANALYZE_OUTPUT_TOKENS,
+        )
     except Exception as exc:
         log.exception("analysis failed")
         return jsonify({
