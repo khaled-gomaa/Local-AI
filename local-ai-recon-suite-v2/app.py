@@ -854,7 +854,9 @@ def project_hosts(program: str):
     store = ProjectStore()
     traffic = ProgramTrafficStore()
     try:
-        program_row = store.ensure_program(program)
+        program_row = store.get_program(program)
+        if program_row is None:
+            return jsonify({"ok": False, "error": "program not found"}), 404
         return jsonify({
             "ok": True,
             "program": program_row["name"],
@@ -871,7 +873,9 @@ def project_recon(program: str, host: str):
     store = ProjectStore()
     traffic = ProgramTrafficStore()
     try:
-        program_row = store.ensure_program(program)
+        program_row = store.get_program(program)
+        if program_row is None:
+            return jsonify({"ok": False, "error": "program not found"}), 404
         snapshot = traffic.snapshot(int(program_row["id"]), host)
         return jsonify({
             "ok": True,
@@ -887,7 +891,9 @@ def project_recon(program: str, host: str):
 def project_shadow(program: str):
     store = ProjectStore()
     try:
-        program_row = store.ensure_program(program)
+        program_row = store.get_program(program)
+        if program_row is None:
+            return jsonify({"ok": False, "error": "program not found"}), 404
         return jsonify({
             "ok": True,
             "program": program_row["name"],
@@ -902,10 +908,12 @@ def project_report(program: str, host: str):
         return jsonify({"ok": False, "error": "invalid host"}), 400
     store = ProjectStore()
     try:
-        program_row = store.ensure_program(program)
+        program_row = store.get_program(program)
+        if program_row is None:
+            return "Program not found.", 404, {"Content-Type": "text/plain; charset=utf-8"}
         findings = store.shadow_context(int(program_row["id"]), host)
         if not findings:
-            return "No shadow review yet.", 404, {"Content-Type": "text/plain; charset=utf-8"}
+            return "No shadow review yet.", 200, {"Content-Type": "text/plain; charset=utf-8"}
 
         lead = next(
             (
