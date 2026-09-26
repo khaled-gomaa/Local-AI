@@ -116,16 +116,16 @@ def run_shadow_team(
             f"manual recon review {spec['focus']} "
             + json.dumps({
                 "host": host,
-                "paths": [p.get("path") for p in snapshot.get("pages", [])[:80]],
+                "paths": [p.get("path") for p in snapshot.get("pages", [])[:50]],
                 "parameters": sorted({
                     param
                     for page in snapshot.get("pages", [])
                     for param in page.get("params", [])
-                })[:100],
-                "candidates": snapshot.get("candidates", [])[:50],
+                })[:60],
+                "candidates": snapshot.get("candidates", [])[:30],
             }, ensure_ascii=False)
         )
-        evidence = retrieve(query, "recon", k=6)
+        evidence = retrieve(query, "recon", k=4)
         skill_text = load_skill(spec["skill"])
         system = f"""You are the {name} shadow agent in a manual security assessment.
 
@@ -133,7 +133,7 @@ Focus: {spec['focus']}
 
 The specialist skill reference is:
 --- SKILL START ---
-{skill_text[:8000]}
+{skill_text[:4500]}
 --- SKILL END ---
 
 OUTPUT LANGUAGE: English only.
@@ -167,7 +167,7 @@ Return ONLY JSON:
                         "title": e.get("title"),
                         "url": e.get("url"),
                         "source": e.get("source"),
-                        "text": (e.get("text") or "")[:1800],
+                        "text": (e.get("text") or "")[:900],
                     }
                     for e in evidence[:6]
                 ],
