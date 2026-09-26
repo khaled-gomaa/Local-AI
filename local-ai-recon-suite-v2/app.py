@@ -38,6 +38,9 @@ BURP_ANALYZE_MAX_CHARS: Final = int(os.getenv("BURP_ANALYZE_MAX_CHARS", "8000"))
 BURP_ANALYZE_OUTPUT_TOKENS: Final = int(os.getenv("BURP_ANALYZE_OUTPUT_TOKENS", "384"))
 BURP_ANALYZE_TIMEOUT: Final = int(os.getenv("BURP_ANALYZE_TIMEOUT", "75"))
 OLLAMA_CHAT_TIMEOUT: Final = int(os.getenv("OLLAMA_CHAT_TIMEOUT", "180"))
+SHADOW_CHAT_TIMEOUT: Final = int(os.getenv("SHADOW_CHAT_TIMEOUT", "240"))
+SHADOW_CHAT_OUTPUT_TOKENS: Final = int(os.getenv("SHADOW_CHAT_OUTPUT_TOKENS", "256"))
+SHADOW_GATE_WAIT: Final = int(os.getenv("SHADOW_GATE_WAIT", "600"))
 OLLAMA_KEEP_ALIVE: Final = os.getenv("OLLAMA_KEEP_ALIVE", "10m")
 RETRIEVAL_CANDIDATES: Final = int(os.getenv("RETRIEVAL_CANDIDATES", "24"))
 
@@ -194,10 +197,14 @@ def ollama_chat(
     background: bool = False,
     timeout: int | None = None,
     num_predict: int | None = None,
+    gate_wait_timeout: float | None = None,
 ) -> str:
+    if gate_wait_timeout is None:
+        gate_wait_timeout = 5.0 if not background else 0.0
+
     chat_gate.acquire(
         background=background,
-        wait_timeout=5.0 if not background else 0.0,
+        wait_timeout=gate_wait_timeout,
     )
     try:
         payload = {
@@ -1005,7 +1012,14 @@ def project_shadow_review(program: str, host: str):
             },
             previous_findings=store.shadow_context(int(program_row["id"]), host),
             retrieve=retrieve,
-            chat=ollama_chat,
+            chat=lambda system, user: ollama_chat(
+                system,
+                user,
+                background=False,
+                timeout=SHADOW_CHAT_TIMEOUT,
+                num_predict=SHADOW_CHAT_OUTPUT_TOKENS,
+                gate_wait_timeout=SHADOW_GATE_WAIT,
+            ),
             save_finding=store.save_shadow_finding,
             record_findings=store.record_shadow_findings,
             learning_context=store.finding_learning_context(int(program_row["id"]), host),
